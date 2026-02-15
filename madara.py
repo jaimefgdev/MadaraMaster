@@ -65,7 +65,7 @@ LANG = {
     "EN": {
         # -- Interactive session --
         "session_title":      "Interactive Session Mode",
-        "session_hint":       "Drag files one by one and press Enter (or type the path).",
+        "session_hint":       "Drag files and press Enter (or type the path).",
         "session_exit_hint":  "Type [bold]exit[/bold] or [bold]close[/bold] to quit.",
         "queue_count":        "{n} file(s) queued",
         "queue_hint":         "Add more files or press Enter to WIPE.",
@@ -149,7 +149,7 @@ LANG = {
     "ES": {
         # -- Interactive session --
         "session_title":      "Modo Sesión Interactiva",
-        "session_hint":       "Arrastra archivos uno a uno y pulsa Enter (o escribe la ruta).",
+        "session_hint":       "Arrastra archivos y pulsa Enter (o escribe la ruta).",
         "session_exit_hint":  "Escribe [bold]salir[/bold] o [bold]cerrar[/bold] para salir.",
         "queue_count":        "{n} archivo(s) en cola",
         "queue_hint":         "Añade más archivos o pulsa Enter para BORRAR.",
@@ -859,7 +859,7 @@ def _parse_multi_paths(raw: str) -> list[str]:
             # Unquoted path — runs until next space (unless it looks like a drive letter path)
             # On Windows, paths with spaces won't work unquoted with multi-file, but single file is fine
             end = i
-            while end < len(raw) and raw[end] not in ('"', "'"):
+            while end < len(raw) and raw[end] not in (' ', '\t', '"', "'"):
                 end += 1
             paths.append(raw[i:end].strip())
             i = end
