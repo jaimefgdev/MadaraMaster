@@ -131,7 +131,7 @@ LANG = {
         "partial_wipe":       "⚠ PARTIAL WIPE — {wiped} wiped, {failed} failed",
         "no_files_wiped":     "✗ NO FILES WERE WIPED",
         # -- Completion --
-        "completion_msg":     "[v4.0.0] SANITIZATION VERIFIED — ZERO RECOVERY",
+        "completion_msg":     "DELETION COMPLETED SUCCESSFULLY",
         # -- Pass labels --
         "pass_1":             "Pass 1/3 · Zeros",
         "pass_2":             "Pass 2/3 · Ones",
@@ -215,7 +215,7 @@ LANG = {
         "partial_wipe":       "⚠ BORRADO PARCIAL — {wiped} borrados, {failed} fallidos",
         "no_files_wiped":     "✗ NO SE BORRÓ NINGÚN ARCHIVO",
         # -- Completion --
-        "completion_msg":     "[v4.0.0] SANITIZACIÓN VERIFICADA — ZERO RECOVERY",
+        "completion_msg":     "ELIMINACIÓN COMPLETADA CON EXITO",
         # -- Pass labels --
         "pass_1":             "Pase 1/3 · Ceros",
         "pass_2":             "Pase 2/3 · Unos",
