@@ -1,9 +1,0 @@
-============================= test session starts =============================
-platform win32 -- Python 3.11.0rc2, pytest-9.0.2, pluggy-1.6.0
-rootdir: C:\Users\jaime\Desktop\Proyectos\MadaraMaster-main
-plugins: anyio-4.12.1
-collected 5 items
-
-tests\test_storage.py .....                                              [100%]
-
-============================== 5 passed in 0.04s ==============================
