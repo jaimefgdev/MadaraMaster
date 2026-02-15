@@ -6,7 +6,7 @@
 > This tool **permanently and irrecoverably destroys data**. Use only on files you are authorized to delete. The authors accept no liability for data loss. Always verify your target path and make backups before use.
 >
 > Esta herramienta **destruye datos de forma permanente e irrecuperable**. Úsala solo con archivos que estés autorizado a eliminar. Los autores no aceptan responsabilidad por pérdida de datos. Verifica siempre la ruta destino y haz copias de seguridad antes de usar.
-
+     
 ---
 
 ## 📑 Table of Contents / Índice
