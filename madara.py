@@ -12,7 +12,7 @@ Usage:
     python madara.py wipe <TARGET> --confirm  # Skip confirmation prompt
     python madara.py wipe <TARGET> --dry-run  # Preview without deleting
 
-Author : MadaraMaster Team
+Author : jaimefg1888
 License: MIT — Authorized Data Sanitization Use Only
 """
 
