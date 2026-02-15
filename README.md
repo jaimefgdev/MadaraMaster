@@ -523,6 +523,7 @@ Esta herramienta destruye datos permanentemente. Siempre:
 
 ---
 
+
 <p align="center">
   <strong>🧹 MadaraMaster v4.0 — Enterprise-Grade Data Sanitization</strong><br>
   <em>DoD 5220.22-M & NIST SP 800-88 Rev. 1 Compliant</em>
