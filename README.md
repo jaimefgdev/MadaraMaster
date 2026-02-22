@@ -1,6 +1,6 @@
 # 🧹 MadaraMaster v4.0
 
-**Herramienta de Sanitización Segura de Archivos — NIST SP 800-88 y DoD 5220.22-M**
+**Herramienta de Destrucción Segura de Archivos — NIST SP 800-88 y DoD 5220.22-M**
 
 > **⚠️ AVISO LEGAL:**
 > Esta herramienta **destruye datos de forma permanente e irrecuperable**. Úsala solo con archivos que estés autorizado a eliminar. El autor no acepta responsabilidad por pérdida de datos. Verifica siempre la ruta destino y haz copias de seguridad antes de usar.
