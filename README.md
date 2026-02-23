@@ -32,7 +32,7 @@ cd MadaraMaster
 pip install -r requirements.txt
 ```
 
-Dependencies: `typer`, `rich`, `aiofiles`.
+Dependencies: `typer`, `rich`, `aiofiles` (see `requirements.txt`).
 
 ---
 
@@ -220,7 +220,7 @@ cd MadaraMaster
 pip install -r requirements.txt
 ```
 
-Dependencias: `typer`, `rich`, `aiofiles`.
+Dependencias: `typer`, `rich`, `aiofiles` (ver `requirements.txt`).
 
 ---
 
