@@ -90,7 +90,8 @@ def _detect_linux(path: Path) -> StorageType:
         if len(df_out) < 2:
             return StorageType.UNKNOWN
         dev_name = Path(df_out[1].split()[0]).name
-        base_dev = re.sub(r"\d+$", "", dev_name)
+        # sda1 → sda, nvme0n1p1 → nvme0n1
+        base_dev = re.sub(r"p?\d+$", "", dev_name)
 
         rotational = Path(f"/sys/block/{base_dev}/queue/rotational")
         if rotational.exists():

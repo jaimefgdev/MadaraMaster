@@ -21,7 +21,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, Callable, List
 
-CHUNK_SIZE = 4096
+CHUNK_SIZE = 256 * 1024  # 256 KB — reduces syscall overhead on large files
 DOD_PASSES = 3
 
 

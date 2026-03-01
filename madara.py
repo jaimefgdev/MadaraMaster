@@ -125,6 +125,8 @@ LANG = {
         "wiped": "✔ Wiped",
         "version_desc": "DoD 5220.22-M Compliant Secure File Sanitization",
         "version_license": "License: MIT — Authorized Use Only",
+        "lbl_verify": "Verify",
+        "lbl_audit_log": "Audit Log",
     },
     "ES": {
         "session_title": "Modo Sesión Interactiva",
@@ -196,6 +198,8 @@ LANG = {
         "wiped": "✔ Borrado",
         "version_desc": "Sanitización Segura de Archivos — Norma DoD 5220.22-M",
         "version_license": "Licencia: MIT — Uso Autorizado Únicamente",
+        "lbl_verify": "Verificar",
+        "lbl_audit_log": "Log Auditoría",
     },
 }
 
@@ -312,7 +316,7 @@ class SpeedTracker:
         self._window = window_seconds
         self._samples: collections.deque = collections.deque()
 
-    def record(self, bytes_written: int, timestamp: float = None):
+    def record(self, bytes_written: int, timestamp: Optional[float] = None):
         ts = timestamp or time.time()
         self._samples.append((ts, bytes_written))
         cutoff = ts - self._window
@@ -334,10 +338,10 @@ def _build_dashboard(telemetry: WipeTelemetry, speed_tracker: SpeedTracker, file
     basename = os.path.basename(telemetry.current_file) if telemetry.current_file else "—"
     display_name = basename[:45] + "…" if len(basename) > 45 else basename
 
-    if telemetry.current_pass > 0:
-        status_text = T(f"dash_pass_{telemetry.current_pass}")
-    elif telemetry.finished:
+    if telemetry.finished:
         status_text = T("dash_scrubbing")
+    elif telemetry.current_pass > 0:
+        status_text = T(f"dash_pass_{telemetry.current_pass}")
     else:
         status_text = T("starting")
 
@@ -510,9 +514,9 @@ def wipe(
     info_table.add_row(T("files_to_wipe"), str(len(files)))
     info_table.add_row(T("total_data"), format_bytes(total_size))
     info_table.add_row(T("method"), f"Async Auto-Detect (Standard: {std_enum.value})")
-    info_table.add_row("Verify", "Yes" if verify else "No")
+    info_table.add_row(T("lbl_verify"), "Yes" if verify else "No")
     if log_path:
-        info_table.add_row("Audit Log", log_path)
+        info_table.add_row(T("lbl_audit_log"), log_path)
     console.print(info_table)
 
     if dry_run:

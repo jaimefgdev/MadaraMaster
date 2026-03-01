@@ -5,10 +5,24 @@
 import json
 import logging
 import os
+import getpass
 import socket
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Any
+
+
+def _safe_username() -> str:
+    """os.getlogin() raises OSError in Docker and daemon environments."""
+    try:
+        return os.getlogin()
+    except OSError:
+        pass
+    try:
+        return getpass.getuser()
+    except Exception:
+        pass
+    return os.environ.get("USER", os.environ.get("USERNAME", "unknown"))
 
 
 class AuditLogger:
@@ -26,7 +40,7 @@ class AuditLogger:
                 "passes": result.get("passes_completed", 0),
                 "verified": result.get("verified", False),
                 "duration_sec": result.get("duration", 0.0),
-                "user": os.getlogin(),
+                "user": _safe_username(),
                 "hostname": socket.gethostname(),
                 "success": result.get("success", False),
                 "error": result.get("error"),

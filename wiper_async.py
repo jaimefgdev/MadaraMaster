@@ -7,6 +7,7 @@ import hashlib
 import math
 import os
 import random
+import stat
 import time
 from collections import Counter
 from pathlib import Path
@@ -16,6 +17,16 @@ import aiofiles
 
 from audit import AuditLogger
 from storage import SanitizationStandard, StorageType, detect_storage_type
+
+
+def _ensure_writable(path: Path) -> None:
+    """Make the file writable if it is read-only."""
+    try:
+        mode = path.stat().st_mode
+        if not (mode & stat.S_IWRITE):
+            os.chmod(path, mode | stat.S_IWRITE)
+    except OSError:
+        pass
 
 
 class AsyncWiper:
@@ -50,6 +61,7 @@ class AsyncWiper:
                 raise FileNotFoundError(f"No se encuentra el archivo: {path}")
 
             file_size_for_audit = path.stat().st_size
+            _ensure_writable(path)
             storage_type = detect_storage_type(path)
 
             if storage_type in (StorageType.SSD, StorageType.NVME):
@@ -101,7 +113,7 @@ class AsyncWiper:
                     result["error"] = "Verificación de entropía fallida"
                     result["success"] = False
             else:
-                result["verified"] = "Omitido"
+                result["verified"] = None  # skipped
 
             try:
                 path.unlink()
