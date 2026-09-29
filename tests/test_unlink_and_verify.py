@@ -20,7 +20,7 @@ async def test_unlink_failure_is_reported_as_failure(tmp_path, monkeypatch, wipe
     real_unlink = Path.unlink
 
     def failing_unlink(self, *args, **kwargs):
-        if self.parent == tmp_path and self.suffix == ".tmp":
+        if self.parent == tmp_path and self.name not in ("locked.bin", "audit.jsonl"):
             raise PermissionError("simulated: file is locked")
         return real_unlink(self, *args, **kwargs)
 

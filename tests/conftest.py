@@ -5,9 +5,11 @@ autouse fixture that:
 
 * replaces ``send_trim`` and ``detect_storage_type`` with mocks, so no
   TRIM/ioctl is ever sent and no sysfs/IOCTL/diskutil query is made;
+* blocks ``storage._kernel32`` (the Windows volume-IOCTL entry point);
 * blocks any attempt to open a device (``/dev/*``, block/char nodes,
   ``\\\\.\\`` / ``\\\\?\\GLOBALROOT`` paths) and any ``fcntl.ioctl`` call —
   the null device is the only exception;
+* redirects the default audit-log location into ``tmp_path``;
 * refuses every write, rename, unlink, chmod or utime outside pytest's
   temporary directory;
 * changes the working directory to the test's ``tmp_path``.
@@ -31,6 +33,7 @@ from unittest import mock
 import aiofiles.threadpool
 import pytest
 
+import audit
 import madara
 import storage
 import trim
@@ -38,6 +41,8 @@ import wiper_async
 from storage import StorageType
 
 REAL_SEND_TRIM = trim.send_trim
+REAL_STORAGE_KERNEL32 = storage._kernel32
+REAL_DEFAULT_LOG_PATH = audit.default_log_path
 
 
 class GuardViolation(BaseException):
@@ -130,12 +135,24 @@ def safety_net(
 
     # ── Never TRIM, never probe real hardware ────────────────────────────
     fake_trim = mock.Mock(name="send_trim", return_value=False)
-    for mod in (trim, wiper_async, madara):
+    for mod in (trim, madara):
         monkeypatch.setattr(mod, "send_trim", fake_trim)
 
     fake_storage = mock.Mock(name="detect_storage_type", return_value=StorageType.HDD)
     for mod in (storage, wiper_async):
         monkeypatch.setattr(mod, "detect_storage_type", fake_storage)
+
+    # storage.py talks to volume handles through its own kernel32 instance,
+    # which the CreateFileW guard below cannot see: block it outright.
+    def blocked_kernel32():
+        guard._fail("storage._kernel32 blocked: volume/device IOCTLs are not allowed in tests")
+
+    monkeypatch.setattr(storage, "_kernel32", blocked_kernel32)
+
+    # The default audit log lives in the user's profile: keep it in tmp.
+    sandbox_log = tmp_path / "_default_state" / "audit.jsonl"
+    for mod in (audit, madara):
+        monkeypatch.setattr(mod, "default_log_path", lambda: sandbox_log)
 
     # ── File-system guards ───────────────────────────────────────────────
     real_os_open = os.open
@@ -237,7 +254,7 @@ def safety_net(
 
 @pytest.fixture
 def fake_trim() -> mock.Mock:
-    return wiper_async.send_trim
+    return madara.send_trim
 
 
 @pytest.fixture
