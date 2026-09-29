@@ -16,8 +16,8 @@ Secure file destruction tool. MadaraMaster overwrites files following NIST SP 80
 - **Inode metadata scrubbing** — zeros all MAC timestamps and performs 3–5 renames with variable-length names to overwrite MFT / ext4 journal entries.
 - **Optional `--verify` flag** — re-reads the file after the last pass and compares it with the SHA-256 of what was written; on mismatch the operation fails and the file is **not** deleted.
 - **Safety checks** — symlinks and junctions are never followed (only the link is removed), non-regular files are skipped, files with several hard links are refused unless `--allow-hardlinks` is given, and protected targets (filesystem roots, your home directory, system directories, mount points) are refused unless `--allow-dangerous-target` is given. Wiping a directory asks you to type its name.
-- **Audit log** — every operation is recorded in `madara_audit.jsonl` with pre-wipe SHA-256, UTC timestamps, user, hostname, and result.
-- **Interactive session** — argumentless mode where you can drag files into the terminal, queue them, and wipe them all at once.
+- **Audit log** — every operation is recorded as JSON Lines with UTC timestamps, user, hostname and result, in a private per-user file (`~/.local/state/madaramaster/audit.jsonl` on Linux, `~/Library/Logs/MadaraMaster/audit.jsonl` on macOS, `%LOCALAPPDATA%\MadaraMaster\audit.jsonl` on Windows). The pre-wipe SHA-256 is only recorded with `--hash`, because it lets anyone holding the log confirm what the file contained. `--no-log` disables the log.
+- **Interactive session** — argumentless mode where you can drag files into the terminal, queue them, and wipe them all at once. Paths with spaces work with or without quotes; queuing a directory requires typing `WIPE` to confirm.
 
 ## Requirements
 
@@ -52,7 +52,7 @@ python madara.py wipe /path/to/directory
 python madara.py wipe secret.pdf --confirm
 python madara.py wipe /path --dry-run
 python madara.py wipe data.pdf --standard purge --verify
-python madara.py wipe data.pdf --log-path /var/log/madara_audit.jsonl
+python madara.py wipe data.pdf --log-path ~/madara_audit.jsonl
 ```
 
 ### Options
@@ -64,6 +64,9 @@ python madara.py wipe data.pdf --log-path /var/log/madara_audit.jsonl
 | `--standard` | `-s` | `clear`, `purge`, or `dod` |
 | `--verify` | `-v` | Re-read and compare after wiping; keep the file on mismatch |
 | `--log-path` | `-l` | Custom path for the audit log |
+| `--no-log` | | Do not write an audit log |
+| `--hash` | | Record each file's pre-wipe SHA-256 in the audit log |
+| `--trim` | | After the batch, send one TRIM per filesystem (SSD/NVMe, Linux only) |
 | `--allow-hardlinks` | | Also wipe files with several hard links (destroys the data of every name) |
 | `--allow-dangerous-target` | | Allow protected targets (root, home, system dirs, mount points) |
 
@@ -75,7 +78,9 @@ python madara.py wipe data.pdf --log-path /var/log/madara_audit.jsonl
 | `purge` | 3 + verify | Sensitive data |
 | `dod` | 3 | DoD 5220.22-M compatibility |
 
-On SSDs and NVMe drives, one cryptographic-random pass is always applied regardless of the chosen standard (NIST SP 800-88 Rev. 1 §2.4).
+`purge` always verifies after wiping, even without `--verify`.
+
+On SSDs and NVMe drives, one cryptographic-random pass is always applied regardless of the chosen standard. Overwriting files on flash **cannot** guarantee NIST SP 800-88 *Purge* (wear-leveling and over-provisioning keep old copies out of reach); the tool warns about this when `purge` or `dod` is used on flash. Use full-disk encryption or the drive's own secure erase for that.
 
 ## Project structure
 
@@ -119,8 +124,8 @@ Herramienta de destrucción segura de archivos. MadaraMaster sobrescribe archivo
 - **Limpieza de metadatos de inodo** — pone a cero todos los timestamps MAC y realiza 3–5 renombrados con nombres de longitud variable para machacar entradas de la MFT / journal ext4.
 - **Flag `--verify` opcional** — relee el fichero tras el último pase y lo compara con el SHA-256 de lo escrito; si no coincide, la operación falla y el fichero **no** se elimina.
 - **Salvaguardas** — los enlaces simbólicos y junctions nunca se siguen (solo se elimina el enlace), los ficheros no regulares se omiten, los ficheros con varios enlaces duros se rechazan salvo con `--allow-hardlinks`, y los objetivos protegidos (raíces de sistemas de archivos, tu HOME, directorios del sistema, puntos de montaje) se rechazan salvo con `--allow-dangerous-target`. Para borrar un directorio hay que escribir su nombre.
-- **Log de auditoría** — cada operación queda registrada en `madara_audit.jsonl` con SHA-256 pre-borrado, timestamps UTC, usuario, hostname y resultado.
-- **Sesión interactiva** — modo sin argumentos donde puedes arrastrar archivos a la terminal, hacer cola y borrarlos todos de golpe.
+- **Log de auditoría** — cada operación queda registrada en JSON Lines con timestamps UTC, usuario, hostname y resultado, en un fichero privado del usuario (`~/.local/state/madaramaster/audit.jsonl` en Linux, `~/Library/Logs/MadaraMaster/audit.jsonl` en macOS, `%LOCALAPPDATA%\MadaraMaster\audit.jsonl` en Windows). El SHA-256 previo solo se guarda con `--hash`, porque permite a quien tenga el log confirmar qué contenía el fichero. `--no-log` desactiva el log.
+- **Sesión interactiva** — modo sin argumentos donde puedes arrastrar archivos a la terminal, hacer cola y borrarlos todos de golpe. Las rutas con espacios funcionan con o sin comillas; si hay directorios en la cola hay que escribir `BORRAR` para confirmar.
 
 ## Requisitos
 
@@ -155,7 +160,7 @@ python madara.py wipe /ruta/directorio
 python madara.py wipe secreto.pdf --confirm
 python madara.py wipe /ruta --dry-run
 python madara.py wipe datos.pdf --standard purge --verify
-python madara.py wipe datos.pdf --log-path /var/log/madara_audit.jsonl
+python madara.py wipe datos.pdf --log-path ~/madara_audit.jsonl
 ```
 
 ### Opciones
@@ -167,6 +172,9 @@ python madara.py wipe datos.pdf --log-path /var/log/madara_audit.jsonl
 | `--standard` | `-s` | `clear`, `purge` o `dod` |
 | `--verify` | `-v` | Releer y comparar tras el borrado; conserva el fichero si no coincide |
 | `--log-path` | `-l` | Ruta para el log de auditoría |
+| `--no-log` | | No escribir log de auditoría |
+| `--hash` | | Guardar en el log el SHA-256 previo de cada fichero |
+| `--trim` | | Al terminar, enviar un TRIM por sistema de archivos (SSD/NVMe, solo Linux) |
 | `--allow-hardlinks` | | Borrar también ficheros con varios enlaces duros (destruye los datos de todos sus nombres) |
 | `--allow-dangerous-target` | | Permitir objetivos protegidos (raíz, HOME, directorios del sistema, puntos de montaje) |
 
@@ -178,7 +186,9 @@ python madara.py wipe datos.pdf --log-path /var/log/madara_audit.jsonl
 | `purge` | 3 + verificación | Datos sensibles |
 | `dod` | 3 | Compatibilidad DoD 5220.22-M |
 
-En SSD y NVMe siempre se aplica 1 pase aleatorio criptográfico independientemente del estándar elegido (NIST SP 800-88 Rev. 1 §2.4).
+`purge` siempre verifica tras el borrado, aunque no se pase `--verify`.
+
+En SSD y NVMe siempre se aplica 1 pase aleatorio criptográfico independientemente del estándar elegido. Sobrescribir ficheros en flash **no** garantiza *Purge* de NIST SP 800-88 (el wear-leveling y el sobreaprovisionamiento conservan copias antiguas fuera de alcance); la herramienta avisa de ello al usar `purge` o `dod` en flash. Para eso, usa cifrado de disco completo o el borrado seguro de la propia unidad.
 
 ## Estructura del proyecto
 

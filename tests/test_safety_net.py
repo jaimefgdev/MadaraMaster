@@ -13,10 +13,19 @@ from conftest import GuardViolation
 
 
 def test_trim_and_storage_detection_are_mocked(fake_trim, fake_storage):
+    import madara
+
     assert trim.send_trim is fake_trim
-    assert wiper_async.send_trim is fake_trim
+    assert madara.send_trim is fake_trim
+    assert not hasattr(wiper_async, "send_trim"), "the engine must not TRIM per file"
     assert storage.detect_storage_type is fake_storage
     assert wiper_async.detect_storage_type is fake_storage
+
+
+def test_windows_volume_ioctls_are_blocked(safety_net):
+    with pytest.raises(GuardViolation):
+        storage._kernel32()
+    safety_net.violations.clear()
 
 
 @pytest.mark.parametrize("path", ["\\\\.\\PhysicalDrive0", "//./C:"])
