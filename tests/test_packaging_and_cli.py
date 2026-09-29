@@ -50,9 +50,35 @@ def test_pyproject_declares_console_script_and_bounded_dependencies():
         assert ">=" in spec and "<" in spec.replace("<=", ""), f"unbounded dependency: {spec}"
 
 
+def _built_manifest() -> str:
+    """Run the manifest generation of MadaraMaster.spec (without PyInstaller)."""
+    spec = (ROOT / "MadaraMaster.spec").read_text(encoding="utf-8")
+    namespace = {"SPECPATH": str(ROOT)}
+    exec(spec[: spec.index("a = Analysis(")], namespace)  # noqa: S102 — our own spec
+    return namespace["manifest_xml"]()
+
+
+def test_built_manifest_is_a_valid_application_manifest():
+    """Regression: without assemblyIdentity/@version the .exe failed to start
+    ("side-by-side configuration is incorrect")."""
+    import xml.etree.ElementTree as ET
+
+    ns = {"asm1": "urn:schemas-microsoft-com:asm.v1", "asm3": "urn:schemas-microsoft-com:asm.v3"}
+    root = ET.fromstring(_built_manifest().encode("utf-8"))
+    identity = root.find("asm1:assemblyIdentity", ns)
+    assert identity is not None
+    assert identity.get("type") == "win32"
+    assert identity.get("name")
+    version = identity.get("version")
+    assert re.fullmatch(r"\d+\.\d+\.\d+\.\d+", version), version
+    assert version.startswith(madaramaster.__version__)
+    level = root.find(".//asm3:requestedExecutionLevel", ns)
+    assert level.get("level") == "asInvoker"
+
+
 def test_spec_is_versioned_and_does_not_require_admin():
     spec = (ROOT / "MadaraMaster.spec").read_text(encoding="utf-8")
-    assert 'manifest="madara.manifest"' in spec
+    assert "manifest=manifest_xml()" in spec
     assert "uac_admin=False" in spec
     assert "*.spec" not in (ROOT / ".gitignore").read_text(encoding="utf-8")
     manifest = (ROOT / "madara.manifest").read_text(encoding="utf-8")
