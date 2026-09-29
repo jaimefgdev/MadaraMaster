@@ -33,12 +33,10 @@ from unittest import mock
 import aiofiles.threadpool
 import pytest
 
-import audit
-import madara
-import storage
-import trim
-import wiper_async
-from storage import StorageType
+from madaramaster import audit, storage, trim
+from madaramaster import cli as madara
+from madaramaster import engine as wiper_async
+from madaramaster.storage import StorageType
 
 REAL_SEND_TRIM = trim.send_trim
 REAL_STORAGE_KERNEL32 = storage._kernel32
@@ -269,6 +267,6 @@ def audit_path(tmp_path: pathlib.Path) -> pathlib.Path:
 
 @pytest.fixture
 def wiper(audit_path: pathlib.Path) -> wiper_async.AsyncWiper:
-    from audit import AuditLogger
+    from madaramaster.audit import AuditLogger
 
     return wiper_async.AsyncWiper(AuditLogger(audit_path))
