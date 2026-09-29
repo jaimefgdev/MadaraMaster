@@ -6,7 +6,8 @@ autouse fixture that:
 * replaces ``send_trim`` and ``detect_storage_type`` with mocks, so no
   TRIM/ioctl is ever sent and no sysfs/IOCTL/diskutil query is made;
 * blocks any attempt to open a device (``/dev/*``, block/char nodes,
-  ``\\\\.\\`` / ``\\\\?\\GLOBALROOT`` paths) and any ``fcntl.ioctl`` call;
+  ``\\\\.\\`` / ``\\\\?\\GLOBALROOT`` paths) and any ``fcntl.ioctl`` call —
+  the null device is the only exception;
 * refuses every write, rename, unlink, chmod or utime outside pytest's
   temporary directory;
 * changes the working directory to the test's ``tmp_path``.
@@ -47,13 +48,25 @@ _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 _WIN_DEVICE_PREFIXES = ("\\\\.\\", "//./", "\\\\?\\globalroot", "//?/globalroot")
 
 
+# The null device is harmless and is opened by the stdlib itself (e.g.
+# ``subprocess`` with ``DEVNULL``, used by ``platform.system()`` on Windows).
+_NULL_DEVICES = {
+    os.path.normcase(p)
+    for p in (os.devnull, os.path.realpath(os.devnull), "\\\\.\\nul", "/dev/null")
+}
+
+
 def _is_device_path(path: Any) -> bool:
     if isinstance(path, int):
         return False
     s = os.fsdecode(os.fspath(path))
+    if os.path.normcase(s) in _NULL_DEVICES:
+        return False
     if s.lower().startswith(_WIN_DEVICE_PREFIXES):
         return True
     real = os.path.realpath(s)
+    if os.path.normcase(real) in _NULL_DEVICES:
+        return False
     if real == "/dev" or real.startswith("/dev/"):
         return True
     try:
@@ -84,6 +97,8 @@ class _Guard:
         never on its target.
         """
         if isinstance(path, int):
+            return
+        if os.path.normcase(os.fsdecode(os.fspath(path))) in _NULL_DEVICES:
             return
         s = os.path.abspath(os.fsdecode(os.fspath(path)))
         if follow:

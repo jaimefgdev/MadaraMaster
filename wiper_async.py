@@ -464,19 +464,28 @@ def _enumerate_ads_windows(path: Path) -> list[str]:
             ("cStreamName", ctypes.c_wchar * BUF_CHARS),
         ]
 
-    k32 = ctypes.windll.kernel32
-    find_first = getattr(k32, "FindFirstStreamW", None)
-    find_next = getattr(k32, "FindNextStreamW", None)
-    find_close = getattr(k32, "FindClose", None)
-
-    if not all((find_first, find_next, find_close)):
+    # Private kernel32 instance with explicit prototypes: without a
+    # ``restype`` ctypes truncates the 64-bit find handle (a pointer) to a
+    # 32-bit int and the next call crashes with an access violation.
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        find_first = k32.FindFirstStreamW
+        find_next = k32.FindNextStreamW
+        find_close = k32.FindClose
+    except (OSError, AttributeError):
         return []
+
+    find_first.restype = ctypes.c_void_p
+    find_first.argtypes = [ctypes.c_wchar_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    find_next.restype = ctypes.c_int
+    find_next.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    find_close.restype = ctypes.c_int
+    find_close.argtypes = [ctypes.c_void_p]
 
     data = WIN32_FIND_STREAM_DATA()
     handle = find_first(str(path), 0, ctypes.byref(data), 0)
 
-    INVALID = ctypes.c_void_p(-1).value
-    if handle == INVALID or handle is None:
+    if handle is None or handle == _INVALID_HANDLE_VALUE:
         return []
 
     ads_names: list[str] = []

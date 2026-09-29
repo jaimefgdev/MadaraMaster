@@ -28,7 +28,7 @@ def test_windows_device_paths_are_blocked(safety_net, path):
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX device nodes")
 def test_dev_nodes_are_blocked(safety_net):
-    for path in ("/dev/null", "/dev/zero"):
+    for path in ("/dev/zero", "/dev/random"):
         with pytest.raises(GuardViolation):
             os.open(path, os.O_RDONLY)
         with pytest.raises(GuardViolation):
@@ -39,10 +39,15 @@ def test_dev_nodes_are_blocked(safety_net):
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX device nodes")
 def test_symlink_to_device_is_blocked(safety_net, tmp_path):
     link = tmp_path / "disk"
-    link.symlink_to("/dev/null")
+    link.symlink_to("/dev/zero")
     with pytest.raises(GuardViolation):
         os.open(link, os.O_WRONLY)
     safety_net.violations.clear()
+
+
+def test_null_device_is_allowed():
+    fd = os.open(os.devnull, os.O_RDWR)
+    os.close(fd)
 
 
 def test_writes_outside_sandbox_are_blocked(safety_net):
