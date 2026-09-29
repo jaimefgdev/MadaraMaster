@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from safety import is_link_like
+
 CHUNK_SIZE = 256 * 1024  # 256 KB — reduces syscall overhead on large files
 DOD_PASSES = 3
 
@@ -197,11 +199,35 @@ def wipe_file(
     start_time = time.time()
     filepath = os.path.abspath(filepath)
 
-    if not os.path.isfile(filepath):
+    try:
+        st = os.lstat(filepath)
+    except OSError:
         return WipeResult(
             filepath=filepath,
             success=False,
             error=f"Archivo no encontrado: {filepath}",
+        )
+
+    if is_link_like(st):
+        # Never follow a link: overwriting it would destroy the target.
+        try:
+            os.unlink(filepath)
+        except OSError as exc:
+            return WipeResult(filepath=filepath, success=False, error=str(exc))
+        return WipeResult(filepath=filepath, success=True, duration=time.time() - start_time)
+
+    if not stat.S_ISREG(st.st_mode):
+        return WipeResult(
+            filepath=filepath,
+            success=False,
+            error=f"No es un fichero regular: {filepath}",
+        )
+
+    if st.st_nlink > 1:
+        return WipeResult(
+            filepath=filepath,
+            success=False,
+            error=f"El fichero tiene {st.st_nlink} enlaces duros: {filepath}",
         )
 
     _ensure_writable(filepath)
@@ -288,15 +314,11 @@ def wipe_directory(
     start_time = time.time()
     dirpath = os.path.abspath(dirpath)
 
-    if not os.path.isdir(dirpath):
+    if os.path.islink(dirpath) or not os.path.isdir(dirpath):
         summary.errors.append(f"Directorio no encontrado: {dirpath}")
         return summary
 
-    all_files = [
-        os.path.join(root, filename)
-        for root, _, files in os.walk(dirpath, topdown=False)
-        for filename in files
-    ]
+    all_files = collect_files(dirpath)
     summary.total_files = len(all_files)
 
     for filepath in all_files:
@@ -325,21 +347,45 @@ def wipe_directory(
 
 
 def collect_files(target: str) -> list[str]:
-    """Return a flat list of all files reachable from *target*.
+    """Return a flat list of every entry to wipe under *target*.
+
+    Links (symlinks and Windows junctions) are **never followed**: a link
+    is returned as an entry of its own so the engine unlinks it without
+    touching its target.  A link given as *target* is returned alone.
+    Non-regular files (FIFOs, sockets, device nodes) are returned too so
+    the engine can report and skip them.
 
     Args:
         target: A path to a single file or a directory root.
 
     Returns:
-        A list of absolute file paths.  Empty if *target* does not exist.
+        A list of absolute paths, children before parents.  Empty if
+        *target* does not exist.
     """
     target = os.path.abspath(target)
-    if os.path.isfile(target):
+    try:
+        st = os.lstat(target)
+    except OSError:
+        return []
+    if is_link_like(st) or not stat.S_ISDIR(st.st_mode):
         return [target]
-    if os.path.isdir(target):
-        return [
-            os.path.join(root, filename)
-            for root, _, filenames in os.walk(target, topdown=False)
-            for filename in filenames
-        ]
-    return []
+
+    found: list[str] = []
+
+    def _walk(directory: str) -> None:
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                est = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if not is_link_like(est) and stat.S_ISDIR(est.st_mode):
+                _walk(entry.path)
+            else:
+                found.append(entry.path)
+
+    _walk(target)
+    return found
