@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from storage import SanitizationStandard, StorageType
+from madaramaster.storage import SanitizationStandard, StorageType
 
 
 def _audit_records(audit_path):
@@ -32,7 +32,7 @@ async def test_unlink_failure_is_reported_as_failure(tmp_path, monkeypatch, wipe
     leftover = Path(result["final_path"])
     assert leftover.exists()
     assert str(leftover) in result["error"]
-    assert "NO eliminado" in result["error"]
+    assert "NOT deleted" in result["error"]
 
     record = _audit_records(audit_path)[-1]
     assert record["success"] is False
@@ -79,7 +79,7 @@ async def test_failed_verification_keeps_the_file(tmp_path, monkeypatch, wiper, 
 
     assert result["success"] is False
     assert result["verified"] is False
-    assert "NO se ha eliminado" in result["error"]
+    assert "was NOT deleted" in result["error"]
     assert target.exists(), "a file that failed verification must not be deleted"
     assert _audit_records(audit_path)[-1]["success"] is False
 

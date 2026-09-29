@@ -5,15 +5,14 @@ import sys
 from pathlib import Path
 
 import pytest
-
-import storage
-import trim
-import wiper_async
 from conftest import GuardViolation
+
+from madaramaster import engine as wiper_async
+from madaramaster import storage, trim
 
 
 def test_trim_and_storage_detection_are_mocked(fake_trim, fake_storage):
-    import madara
+    from madaramaster import cli as madara
 
     assert trim.send_trim is fake_trim
     assert madara.send_trim is fake_trim

@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-import wiper_async
+from madaramaster import engine as wiper_async
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="NTFS alternate data streams")
 

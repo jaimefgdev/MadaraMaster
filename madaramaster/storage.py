@@ -26,7 +26,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-
 # ────────────────────────────────────────────────────────────────
 # Enums y clases de estrategia
 # ────────────────────────────────────────────────────────────────
@@ -63,7 +62,7 @@ class HDDWipeStrategy(WipeStrategy):
         )
 
     def get_description(self) -> str:
-        return "HDD: sobrescritura magnética clásica (zeros → ones → random)"
+        return "HDD: classic magnetic overwrite (zeros → ones → random)"
 
 
 class SSDWipeStrategy(WipeStrategy):
@@ -74,12 +73,12 @@ class SSDWipeStrategy(WipeStrategy):
         return 1
 
     def get_description(self) -> str:
-        return "SSD/NVMe: pase único aleatorio criptográfico"
+        return "SSD/NVMe: single cryptographic-random pass"
 
 
 class NVMeWipeStrategy(SSDWipeStrategy):
     def get_description(self) -> str:
-        return "NVMe: pase único aleatorio criptográfico"
+        return "NVMe: single cryptographic-random pass"
 
 
 def get_strategy(storage_type: StorageType) -> WipeStrategy:

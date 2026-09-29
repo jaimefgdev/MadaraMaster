@@ -119,7 +119,7 @@ class AuditLogger:
             }
             self._append(json.dumps(record) + "\n")
         except Exception as exc:
-            logging.error("No se pudo escribir en el log de auditoría: %s", exc)
+            logging.error("Could not write to the audit log: %s", exc)
 
     def get_logs(self) -> Generator[dict[str, Any], None, None]:
         """Yield parsed log records one at a time.

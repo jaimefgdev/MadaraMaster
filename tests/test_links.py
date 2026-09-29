@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-import wiper as sync_wiper
-import wiper_async
-from storage import SanitizationStandard
+from madaramaster import engine as wiper_async
+from madaramaster import safety
+from madaramaster.storage import SanitizationStandard
 
 
 def _symlink(link, target, target_is_directory=False):
@@ -33,7 +33,7 @@ async def test_symlink_in_directory_does_not_touch_its_target(tmp_path, outside,
     (victim / "real.txt").write_bytes(b"secret")
     _symlink(victim / "link", outside)
 
-    entries = sync_wiper.collect_files(str(victim))
+    entries = safety.collect_files(str(victim))
     assert sorted(os.path.basename(e) for e in entries) == ["link", "real.txt"]
 
     for e in entries:
@@ -50,7 +50,7 @@ async def test_symlink_to_directory_is_not_descended(tmp_path, outside, wiper):
     victim.mkdir()
     _symlink(victim / "dirlink", outside.parent, target_is_directory=True)
 
-    entries = sync_wiper.collect_files(str(victim))
+    entries = safety.collect_files(str(victim))
     assert entries == [str(victim / "dirlink")]
 
     result = await wiper.wipe_file(Path(entries[0]))
@@ -62,29 +62,9 @@ async def test_symlink_to_directory_is_not_descended(tmp_path, outside, wiper):
 def test_top_level_symlink_is_returned_alone(tmp_path, outside):
     link = tmp_path / "link_to_dir"
     _symlink(link, outside.parent, target_is_directory=True)
-    assert sync_wiper.collect_files(str(link)) == [str(link)]
+    assert safety.collect_files(str(link)) == [str(link)]
 
 
-def test_sync_engine_does_not_follow_symlinks(tmp_path, outside):
-    link = tmp_path / "link"
-    _symlink(link, outside)
-    res = sync_wiper.wipe_file(str(link))
-    assert res.success, res.error
-    assert outside.read_bytes() == b"KEEP ME " * 100
-    assert not os.path.lexists(link)
-
-
-def test_sync_wipe_directory_does_not_follow_symlinks(tmp_path, outside):
-    victim = tmp_path / "victim"
-    victim.mkdir()
-    (victim / "a.txt").write_bytes(b"secret")
-    _symlink(victim / "link", outside)
-    _symlink(victim / "dirlink", outside.parent, target_is_directory=True)
-
-    summary = sync_wiper.wipe_directory(str(victim))
-    assert summary.files_failed == 0, summary.errors
-    assert outside.read_bytes() == b"KEEP ME " * 100
-    assert not victim.exists()
 
 
 async def test_file_swapped_after_checks_is_not_written(tmp_path):
@@ -126,7 +106,7 @@ async def test_hardlinked_file_is_refused_by_default(tmp_path, wiper):
     result = await wiper.wipe_file(a)
 
     assert not result["success"]
-    assert "enlaces duros" in result["error"]
+    assert "hard links" in result["error"]
     assert a.read_bytes() == b"SHARED DATA"
     assert (tmp_path / "b.txt").read_bytes() == b"SHARED DATA"
 
@@ -143,19 +123,11 @@ async def test_hardlinked_file_is_wiped_when_allowed(tmp_path, wiper):
     assert b"SHARED DATA" not in (tmp_path / "b.txt").read_bytes()
 
 
-def test_sync_engine_refuses_hardlinks(tmp_path):
-    a = tmp_path / "a.txt"
-    a.write_bytes(b"SHARED DATA")
-    _hardlink(a, tmp_path / "b.txt")
-    res = sync_wiper.wipe_file(str(a))
-    assert not res.success
-    assert (tmp_path / "b.txt").read_bytes() == b"SHARED DATA"
-
 
 def test_cli_allow_hardlinks_flag(tmp_path, audit_path):
     from typer.testing import CliRunner
 
-    import madara
+    from madaramaster import cli as madara
 
     victim = tmp_path / "victim"
     victim.mkdir()

@@ -1,27 +1,32 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
 
+  <!--
+    "version" is required by Windows (a four-part number).  {version} is
+    filled in from madaramaster.__version__ by MadaraMaster.spec at build
+    time, so this file is a template and the version lives in one place.
+  -->
   <assemblyIdentity
-    processorArchitecture="amd64"
-    name="jaimefg1888.MadaraMaster"
     type="win32"
+    name="jaimefg1888.MadaraMaster"
+    version="{version}"
+    processorArchitecture="amd64"
   />
 
   <description>MadaraMaster — Secure File Sanitization Tool</description>
 
   <!--
-    requestedExecutionLevel = requireAdministrator
-    ─────────────────────────────────────────────
-    Forces Windows UAC to display the elevation shield on double-click and
-    on every programmatic invocation.  Required because MadaraMaster calls
-    DeviceIoControl (IOCTL_STORAGE_QUERY_PROPERTY, TRIM), FindFirstStreamW,
-    and performs direct low-level I/O that needs SeManageVolumePrivilege on
-    NTFS volumes.
+    requestedExecutionLevel = asInvoker
+    ──────────────────────────────────
+    Runs with the rights of the user who starts it.  Wiping the user's own
+    files needs no elevation, and a destructive tool should not ask for
+    more privileges than the task requires.  Run it from an elevated
+    console only when a specific target really needs it.
   -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>
