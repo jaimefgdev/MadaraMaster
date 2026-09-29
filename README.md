@@ -117,6 +117,8 @@ The pre-wipe SHA-256 is only recorded with `--hash`, because it lets anyone hold
 
 ### Limitations
 
+Before wiping, MadaraMaster warns you when it detects one of these cases: SSD/NVMe drives, copy-on-write filesystems, network locations, cloud-synced folders and ext3/ext4 mounted with `data=journal`. The absence of a warning is not a guarantee.
+
 MadaraMaster works at file level. It cannot guarantee that no copy of the data survives when:
 
 - **The file is on an SSD, NVMe drive, USB stick or SD card.** The controller remaps writes (wear-leveling, over-provisioning), so the old blocks can stay on the chips. Use full-disk encryption from day one, or the drive's own sanitize command (ATA Secure Erase, NVMe Format / Sanitize), to purge flash.
@@ -285,6 +287,8 @@ Cada archivo borrado añade una línea JSON con el timestamp UTC, la ruta, el ta
 El SHA-256 previo solo se guarda con `--hash`, porque permite a quien tenga el log confirmar qué contenía un archivo. `--no-log` desactiva el log.
 
 ### Limitaciones
+
+Antes de borrar, MadaraMaster avisa cuando detecta alguno de estos casos: SSD/NVMe, sistemas de archivos copy-on-write, ubicaciones de red, carpetas sincronizadas con la nube y ext3/ext4 montado con `data=journal`. Que no aparezca un aviso no es una garantía.
 
 MadaraMaster trabaja a nivel de archivo. No puede garantizar que no sobreviva ninguna copia de los datos cuando:
 
