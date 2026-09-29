@@ -91,7 +91,7 @@ def test_resolved_path_is_checked_for_directories(layout):
 
 @pytest.fixture
 def engine(monkeypatch):
-    fake = mock.AsyncMock(return_value=WipeSummary())
+    fake = mock.AsyncMock(return_value=WipeSummary(total_files=1, files_wiped=1))
     monkeypatch.setattr(madara, "async_wipe_logic", fake)
     return fake
 

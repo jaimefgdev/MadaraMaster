@@ -10,8 +10,9 @@
 # Antes de eliminar: renombra el fichero y resetea timestamps para que las
 # herramientas de carving no encuentren el inodo original.
 
+import errno
 import os
-import random
+import secrets
 import stat
 import string
 import sys
@@ -45,6 +46,7 @@ class WipeSummary:
     total_duration: float = 0.0
     errors: list[str] = field(default_factory=list)
     results: list[WipeResult] = field(default_factory=list)
+    trims_sent: int = 0
 
 
 @dataclass
@@ -63,6 +65,8 @@ class WipeTelemetry:
     file_size: int = 0
     current_file: str = ""
     finished: bool = False
+    pass_patterns: list[str] = field(default_factory=list)
+    algorithm: str = ""
 
     @property
     def total_target_bytes(self) -> int:
@@ -116,7 +120,7 @@ def _overwrite_pass(
         else:
             data = os.urandom(chunk_len)
 
-        os.write(fd, data)
+        _write_all(fd, data)
         bytes_written += chunk_len
         remaining -= chunk_len
 
@@ -127,12 +131,27 @@ def _overwrite_pass(
     return bytes_written
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    """Write *data* completely, retrying short writes.
+
+    Raises:
+        OSError: if ``write(2)`` reports that zero bytes were written.
+    """
+    view = memoryview(data)
+    while len(view):
+        n = os.write(fd, view)
+        if n <= 0:
+            raise OSError(errno.EIO, "write() devolvió 0 bytes")
+        view = view[n:]
+
+
 def _scrub_metadata(filepath: str) -> str:
     """Overwrite the file's timestamps and rename it to obstruct forensic recovery.
 
     Sets ``atime`` and ``mtime`` to Unix epoch 0 so that tools such as
     Autopsy / Sleuth Kit cannot use timestamps to reconstruct the file's
-    history.  Then renames the file to a random 12-character name to
+    history.  Then renames the file to a random name (generated with
+    :mod:`secrets`, same length as the original, no ``.tmp`` suffix) to
     overwrite the directory entry.
 
     Args:
@@ -148,9 +167,9 @@ def _scrub_metadata(filepath: str) -> str:
         pass
 
     directory = os.path.dirname(filepath) or "."
-    random_name = (
-        "".join(random.choices(string.ascii_lowercase + string.digits, k=12)) + ".tmp"
-    )
+    chars = string.ascii_lowercase + string.digits
+    length = max(8, len(os.path.basename(filepath)))
+    random_name = "".join(secrets.choice(chars) for _ in range(length))
     new_path = os.path.join(directory, random_name)
 
     try:
