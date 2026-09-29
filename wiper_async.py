@@ -33,7 +33,7 @@ import math
 import mmap
 import os
 import platform
-import random
+import secrets
 import stat
 import string
 import sys
@@ -47,7 +47,6 @@ import aiofiles
 from audit import AuditLogger
 from safety import is_link_like
 from storage import SanitizationStandard, StorageType, detect_storage_type
-from trim import send_trim
 
 # ─── Alignment constants ─────────────────────────────────────────────────────
 _SECTOR_SIZE = 4096  # Required alignment for O_DIRECT / NO_BUFFERING
@@ -100,16 +99,19 @@ def _aligned_size(n: int, alignment: int = _SECTOR_SIZE) -> int:
 
 
 def _random_name(length: int) -> str:
-    """Generate a random lowercase-alphanumeric filename with a ``.tmp`` suffix.
+    """Generate a random lowercase-alphanumeric name of *length* characters.
+
+    Uses :mod:`secrets` (a CSPRNG) and adds no telltale suffix such as
+    ``.tmp``, so the renamed entry does not reveal that it was wiped.
 
     Args:
-        length: Number of random characters before the extension.
+        length: Number of characters.
 
     Returns:
-        A string such as ``"a3kfzq19wxbm.tmp"``.
+        A string such as ``"a3kfzq19wxbm"``.
     """
     chars = string.ascii_lowercase + string.digits
-    return "".join(random.choices(chars, k=length)) + ".tmp"
+    return "".join(secrets.choice(chars) for _ in range(length))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -126,10 +128,12 @@ def _destroy_metadata(path: Path) -> Path:
        Most forensic tools (Autopsy, Sleuth Kit) rely on MAC times to
        reconstruct file activity; zeroing them removes this evidence.
 
-    2. **Multi-rename** — renames the file 3–5 times using names of
-       variable length (8–24 characters).  Each rename overwrites a
+    2. **Multi-rename** — renames the file 3–5 times using random names
+       with the same length as the original name (at least 8 characters),
+       generated with :mod:`secrets`.  Each rename overwrites a
        directory-entry record in the ext4 journal or an MFT file-name
-       attribute on NTFS, making the original filename harder to recover.
+       attribute on NTFS, making the original filename harder to recover;
+       keeping the length lets the new name reuse the same entry slot.
        After each rename the timestamps are zeroed again because some
        filesystems update ``ctime`` on ``rename(2)``.
 
@@ -146,12 +150,14 @@ def _destroy_metadata(path: Path) -> Path:
         pass
 
     current = path
-    n_renames = random.randint(3, 5)
+    n_renames = 3 + secrets.randbelow(3)
     dir_parent = path.parent
+    length = max(8, len(path.name))
 
     for _ in range(n_renames):
-        length = random.choice([8, 16, 12, 24, 10])
         new_name = dir_parent / _random_name(length)
+        if new_name.exists():
+            continue
         try:
             current.rename(new_name)
             try:
@@ -568,19 +574,47 @@ class AsyncWiper:
     """Asynchronous secure-erase engine.
 
     Combines Direct I/O, multi-pass overwriting, slack-space wiping, ADS
-    destruction (Windows), inode-metadata scrubbing, and TRIM dispatch
-    into a single ``await``-able call.
+    destruction (Windows) and inode-metadata scrubbing into a single
+    ``await``-able call.  TRIM is not sent per file: the caller decides
+    whether to send it once for the whole batch (``madara wipe --trim``).
 
     Args:
         audit_logger: Optional :class:`~audit.AuditLogger` instance.
-            Defaults to a new logger writing to ``madara_audit.jsonl`` in the
-            current working directory.
+            Defaults to a logger writing to :func:`audit.default_log_path`.
+            Pass :class:`audit.NullAuditLogger` to disable logging.
+        hash_before: Record the SHA-256 of each file's contents in the
+            audit log before wiping it.  Off by default: the digest lets
+            anyone with the log confirm what the file contained, and it
+            costs a full extra read of every file.
     """
 
-    def __init__(self, audit_logger: Optional[AuditLogger] = None) -> None:
-        self.audit = audit_logger or AuditLogger()
+    def __init__(
+        self,
+        audit_logger: Optional[AuditLogger] = None,
+        hash_before: bool = False,
+    ) -> None:
+        self.audit = audit_logger if audit_logger is not None else AuditLogger()
+        self.hash_before = hash_before
         self.BUFFER_HDD = 10 * 1024 * 1024  # 10 MB
         self.BUFFER_SSD = 50 * 1024 * 1024  # 50 MB
+        self._storage_cache: dict[int, StorageType] = {}
+
+    def storage_type_for(self, path: Path) -> StorageType:
+        """Detected storage type of the device holding *path* (cached per device)."""
+        try:
+            dev = os.lstat(path).st_dev
+        except OSError:
+            return detect_storage_type(path)
+        if dev not in self._storage_cache:
+            self._storage_cache[dev] = detect_storage_type(path)
+        return self._storage_cache[dev]
+
+    def plan(self, path: Path, standard: SanitizationStandard) -> list[str]:
+        """Return the pass patterns that :meth:`wipe_file` will use for *path*.
+
+        Lets the UI show the real number of passes before wiping starts.
+        """
+        return self._get_passes_config(self.storage_type_for(path), standard)
 
     async def wipe_file(
         self,
@@ -610,14 +644,14 @@ class AsyncWiper:
         6. Destroy inode metadata (timestamps + multi-rename) and delete.
            If the delete fails the operation is reported as failed with
            the file's current path.
-        7. Send TRIM to the storage controller (SSD/NVMe only).
-        8. Write an audit-log record.
+        7. Write an audit-log record.
 
         Args:
             path: Absolute path to the file to wipe.
             standard: Sanitization standard that controls the number of
                 passes for HDDs.
             verify: Re-read and compare the file after the last pass.
+                Always on for :attr:`SanitizationStandard.NIST_PURGE`.
             progress_callback: Optional async or sync callable with
                 signature ``(path, pass_index, bytes_written, file_size)``.
             allow_hardlinks: Wipe files with more than one hard link.
@@ -633,7 +667,7 @@ class AsyncWiper:
             * ``duration`` (float) — seconds
             * ``strategy`` (str)
             * ``error`` (str | None)
-            * ``trim_sent`` (bool)
+            * ``storage_type`` (str) — detected storage type
             * ``direct_io`` (bool)
             * ``ads_wiped`` (int)
             * ``slack_wiped`` (bool)
@@ -647,7 +681,7 @@ class AsyncWiper:
             "duration": 0.0,
             "strategy": "Unknown",
             "error": None,
-            "trim_sent": False,
+            "storage_type": None,
             "direct_io": False,
             "ads_wiped": 0,
             "slack_wiped": False,
@@ -655,8 +689,9 @@ class AsyncWiper:
         }
 
         path = Path(path)
-        sha256_before = "unknown"
+        sha256_before: Optional[str] = None
         file_size_for_audit = 0
+        verify = verify or standard == SanitizationStandard.NIST_PURGE
 
         try:
             try:
@@ -685,7 +720,8 @@ class AsyncWiper:
 
             file_size_for_audit = st.st_size
             _ensure_writable(path)
-            storage_type = detect_storage_type(path)
+            storage_type = self.storage_type_for(path)
+            result["storage_type"] = storage_type.value
 
             if storage_type in (StorageType.SSD, StorageType.NVME):
                 strategy_name = "SSD/NVMe"
@@ -696,7 +732,8 @@ class AsyncWiper:
 
             result["strategy"] = f"{strategy_name} ({standard.value})"
 
-            sha256_before = await self._calculate_sha256(path)
+            if self.hash_before:
+                sha256_before = await self._calculate_sha256(path)
             passes_config = self._get_passes_config(storage_type, standard)
             passes_done = 0
             start_time = time.time()
@@ -773,11 +810,6 @@ class AsyncWiper:
 
             result["success"] = True
 
-            # ── 7. TRIM (SSD/NVMe only) ───────────────────────────────────
-            if storage_type in (StorageType.SSD, StorageType.NVME):
-                trim_ok = await asyncio.to_thread(send_trim, path)
-                result["trim_sent"] = trim_ok
-
         except Exception as exc:
             result["error"] = str(exc)
             result["success"] = False
@@ -793,7 +825,7 @@ class AsyncWiper:
         self,
         path: Path,
         file_size: int,
-        sha256_before: str,
+        sha256_before: Optional[str],
         standard: SanitizationStandard,
         result: dict[str, Any],
     ) -> None:

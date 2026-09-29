@@ -37,14 +37,12 @@ def test_send_trim_dispatches_on_linux(monkeypatch, tmp_path):
     linux.assert_called_once_with(tmp_path)
 
 
-@pytest.mark.parametrize(
-    "storage_type, expected_calls",
-    [(StorageType.SSD, 1), (StorageType.NVME, 1), (StorageType.HDD, 0), (StorageType.UNKNOWN, 0)],
-)
-async def test_engine_only_trims_flash(tmp_path, wiper, fake_storage, fake_trim, storage_type, expected_calls):
+@pytest.mark.parametrize("storage_type", list(StorageType))
+async def test_engine_never_trims_per_file(tmp_path, wiper, fake_storage, fake_trim, storage_type):
     fake_storage.return_value = storage_type
     target = tmp_path / "f.bin"
     target.write_bytes(os.urandom(100))
     result = await wiper.wipe_file(target)
     assert result["success"], result["error"]
-    assert fake_trim.call_count == expected_calls
+    assert result["storage_type"] == storage_type.value
+    fake_trim.assert_not_called()

@@ -16,6 +16,7 @@ import asyncio
 import collections
 import errno
 import os
+import shlex
 import sys
 import time
 import uuid
@@ -33,12 +34,13 @@ from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
+import storage
 from safety import find_danger
-from storage import SanitizationStandard
+from storage import SanitizationStandard, StorageType
 from trim import send_trim
 from utils import format_bytes
+from audit import AuditLogger, NullAuditLogger, default_log_path
 from wiper import (
-    DOD_PASSES,
     WipeResult,
     WipeSummary,
     WipeTelemetry,
@@ -89,7 +91,8 @@ LANG: dict[str, dict[str, str]] = {
         "more_files": "...and {n} more files",
         "warning_title": "⚠ WARNING: THIS ACTION IS IRREVERSIBLE ⚠",
         "warning_body": (
-            "All targeted files will be overwritten 3 times and permanently deleted.\n"
+            "All targeted files will be overwritten (1 to 3 passes depending on the\n"
+            "standard and the storage type) and permanently deleted.\n"
             "[bold]Data CANNOT be recovered after this operation.[/]"
         ),
         "confirm_prompt": "  Are you sure you want to proceed?",
@@ -105,9 +108,11 @@ LANG: dict[str, dict[str, str]] = {
         "dash_file": "📁 File",
         "dash_algorithm": "🔒 Algorithm",
         "dash_status": "🔄 Status",
-        "dash_pass_1": "Pass 1/3 — Overwriting with 0x00 (Zeros)...",
-        "dash_pass_2": "Pass 2/3 — Overwriting with 0xFF (Ones)...",
-        "dash_pass_3": "Pass 3/3 — Overwriting with Random Bytes...",
+        "dash_pass": "Pass {i}/{n} — {pattern}...",
+        "pat_zeros": "Overwriting with 0x00 (Zeros)",
+        "pat_ones": "Overwriting with 0xFF (Ones)",
+        "pat_random": "Overwriting with Random Bytes",
+        "dash_algorithm_value": "{standard} · {n} pass(es)",
         "dash_scrubbing": "🧹 Scrubbing metadata & deleting...",
         "dash_progress": "📊 Global Progress",
         "dash_speed": "🚀 Speed",
@@ -130,9 +135,6 @@ LANG: dict[str, dict[str, str]] = {
         "partial_wipe": "⚠ PARTIAL WIPE — {wiped} wiped, {failed} failed",
         "no_files_wiped": "✗ NO FILES WERE WIPED",
         "completion_msg": "DELETION COMPLETED SUCCESSFULLY",
-        "pass_1": "Pass 1/3 · Zeros",
-        "pass_2": "Pass 2/3 · Ones",
-        "pass_3": "Pass 3/3 · Random",
         "wiped": "✔ Wiped",
         "version_desc": "DoD 5220.22-M Compliant Secure File Sanitization",
         "version_license": "License: MIT — Authorized Use Only",
@@ -157,6 +159,17 @@ LANG: dict[str, dict[str, str]] = {
         "dangerous_target_hint": "Use --allow-dangerous-target only if you are absolutely sure.",
         "confirm_type_name": "  Type the directory name ({name}) to confirm",
         "wfs_cleanup_failed": "Could not remove the fill file — delete it manually:",
+        "dangerous_target_interactive": "Protected targets cannot be wiped from the interactive session.",
+        "confirm_word": "WIPE",
+        "confirm_word_prompt": "Directories are queued. Type {word} to confirm: ",
+        "ssd_purge_warning": (
+            "The target is on an SSD/NVMe drive. Overwriting files cannot guarantee\n"
+            "NIST 800-88 Purge on flash (wear-leveling, over-provisioning).\n"
+            "For that, use full-disk encryption or the drive's own secure erase."
+        ),
+        "purge_forces_verify": "The purge standard always verifies after wiping.",
+        "trims_sent": "TRIM sent",
+        "lbl_hash": "Hash before wipe",
     },
     "ES": {
         "session_title": "Modo Sesión Interactiva",
@@ -184,7 +197,8 @@ LANG: dict[str, dict[str, str]] = {
         "more_files": "...y {n} archivos más",
         "warning_title": "⚠ ADVERTENCIA: ESTA ACCIÓN ES IRREVERSIBLE ⚠",
         "warning_body": (
-            "Todos los archivos serán sobrescritos 3 veces y eliminados permanentemente.\n"
+            "Todos los archivos serán sobrescritos (de 1 a 3 pases según el estándar\n"
+            "y el tipo de almacenamiento) y eliminados permanentemente.\n"
             "[bold]Los datos NO se podrán recuperar tras esta operación.[/]"
         ),
         "confirm_prompt": "  ¿Estás seguro de que deseas continuar?",
@@ -200,9 +214,11 @@ LANG: dict[str, dict[str, str]] = {
         "dash_file": "📁 Archivo",
         "dash_algorithm": "🔒 Algoritmo",
         "dash_status": "🔄 Estado",
-        "dash_pass_1": "Pase 1/3 — Sobrescribiendo con 0x00 (Ceros)...",
-        "dash_pass_2": "Pase 2/3 — Sobrescribiendo con 0xFF (Unos)...",
-        "dash_pass_3": "Pase 3/3 — Sobrescribiendo con Bytes Aleatorios...",
+        "dash_pass": "Pase {i}/{n} — {pattern}...",
+        "pat_zeros": "Sobrescribiendo con 0x00 (Ceros)",
+        "pat_ones": "Sobrescribiendo con 0xFF (Unos)",
+        "pat_random": "Sobrescribiendo con Bytes Aleatorios",
+        "dash_algorithm_value": "{standard} · {n} pase(s)",
         "dash_scrubbing": "🧹 Limpiando metadatos y eliminando...",
         "dash_progress": "📊 Progreso Global",
         "dash_speed": "🚀 Velocidad",
@@ -225,9 +241,6 @@ LANG: dict[str, dict[str, str]] = {
         "partial_wipe": "⚠ BORRADO PARCIAL — {wiped} borrados, {failed} fallidos",
         "no_files_wiped": "✗ NO SE BORRÓ NINGÚN ARCHIVO",
         "completion_msg": "ELIMINACIÓN COMPLETADA CON ÉXITO",
-        "pass_1": "Pase 1/3 · Ceros",
-        "pass_2": "Pase 2/3 · Unos",
-        "pass_3": "Pase 3/3 · Aleatorio",
         "wiped": "✔ Borrado",
         "version_desc": "Sanitización Segura de Archivos — Norma DoD 5220.22-M",
         "version_license": "Licencia: MIT — Uso Autorizado Únicamente",
@@ -252,6 +265,17 @@ LANG: dict[str, dict[str, str]] = {
         "dangerous_target_hint": "Usa --allow-dangerous-target solo si estás completamente seguro.",
         "confirm_type_name": "  Escribe el nombre del directorio ({name}) para confirmar",
         "wfs_cleanup_failed": "No se pudo eliminar el archivo de relleno; bórralo a mano:",
+        "dangerous_target_interactive": "Los objetivos protegidos no se pueden borrar desde la sesión interactiva.",
+        "confirm_word": "BORRAR",
+        "confirm_word_prompt": "Hay directorios en la cola. Escribe {word} para confirmar: ",
+        "ssd_purge_warning": (
+            "El objetivo está en un SSD/NVMe. Sobrescribir ficheros no garantiza\n"
+            "NIST 800-88 Purge en flash (wear-leveling, sobreaprovisionamiento).\n"
+            "Para eso, usa cifrado de disco completo o el borrado seguro de la unidad."
+        ),
+        "purge_forces_verify": "El estándar purge siempre verifica tras el borrado.",
+        "trims_sent": "TRIM enviado",
+        "lbl_hash": "Hash previo",
     },
 }
 
@@ -382,6 +406,8 @@ def print_summary(summary: WipeSummary) -> None:
     if total > 0 and summary.total_duration > 0:
         speed = total / summary.total_duration
         table.add_row(T("avg_speed"), f"[dim]{format_bytes(speed)}/s[/]")
+    if summary.trims_sent:
+        table.add_row(T("trims_sent"), f"[dim]{summary.trims_sent}[/]")
 
     console.print()
     console.print(table)
@@ -512,7 +538,10 @@ def _build_dashboard(
     if telemetry.finished:
         status_text = T("dash_scrubbing")
     elif telemetry.current_pass > 0:
-        status_text = T(f"dash_pass_{telemetry.current_pass}")
+        idx = telemetry.current_pass
+        patterns = telemetry.pass_patterns
+        pattern = T(f"pat_{patterns[idx - 1]}") if 0 < idx <= len(patterns) else "…"
+        status_text = T("dash_pass", i=idx, n=telemetry.total_passes, pattern=pattern)
     else:
         status_text = T("starting")
 
@@ -520,7 +549,7 @@ def _build_dashboard(
     info_table.add_column("Key", style="bold white", ratio=1)
     info_table.add_column("Value", style="bright_white", ratio=3)
     info_table.add_row(T("dash_file"), f"[bright_yellow]{display_name}[/]")
-    info_table.add_row(T("dash_algorithm"), "[dim]DoD 5220.22-M (3 Passes)[/]")
+    info_table.add_row(T("dash_algorithm"), f"[dim]{telemetry.algorithm or '—'}[/]")
     info_table.add_row(T("dash_status"), f"[bright_cyan]{status_text}[/]")
     if total_files > 1:
         info_table.add_row(
@@ -571,21 +600,62 @@ def _build_dashboard(
     return Panel(inner, border_style="bright_cyan", box=box.HEAVY, padding=(1, 2))
 
 
-def _print_completion_panel() -> None:
-    """Render the post-wipe completion banner."""
-    console.print()
-    console.print(
-        Panel(
-            Align.center(Text(T("completion_msg"), style="bold bright_green on black")),
-            border_style="bright_green",
-            box=box.DOUBLE_EDGE,
-            padding=(1, 4),
-        )
-    )
-    console.print()
-
-
 # ─── Async wipe orchestration ─────────────────────────────────────────────────
+
+_FLASH_TYPES = ("ssd", "nvme")
+
+
+def _expand_targets(
+    targets: list[str], allow_dangerous: bool = False
+) -> tuple[list[str], list[str], list[str]]:
+    """Turn user targets into the flat list of entries to wipe.
+
+    Shared by the ``wipe`` command and the interactive session so both
+    apply the same rules: protected targets are refused, links are never
+    followed (see :func:`wiper.collect_files`) and every directory target
+    is remembered so it can be removed once emptied.
+
+    Args:
+        targets: Paths as given by the user.
+        allow_dangerous: Accept protected targets (``--allow-dangerous-target``).
+
+    Returns:
+        ``(files, directories, errors)``: entries to wipe (deduplicated,
+        in order), directory targets to remove afterwards, and one message
+        per rejected target.
+    """
+    files: dict[str, None] = {}
+    dirs: list[str] = []
+    errors: list[str] = []
+    for raw in targets:
+        target = os.path.abspath(raw)
+        if not os.path.lexists(target):
+            errors.append(f"{T('target_not_found')} {target}")
+            continue
+        danger = find_danger(target)
+        if danger and not allow_dangerous:
+            errors.append(f"{T('dangerous_target')} {danger}")
+            continue
+        for f in collect_files(target):
+            files.setdefault(f, None)
+        if os.path.isdir(target) and not os.path.islink(target):
+            dirs.append(target)
+    return list(files), dirs, errors
+
+
+def _remove_empty_dirs(dirs: list[str]) -> None:
+    """Remove each directory tree bottom-up, skipping anything not empty."""
+    for target in dirs:
+        for root, subdirs, _ in os.walk(target, topdown=False):
+            for d in subdirs:
+                try:
+                    os.rmdir(os.path.join(root, d))
+                except OSError:
+                    pass
+        try:
+            os.rmdir(target)
+        except OSError:
+            pass
 
 
 async def async_wipe_logic(
@@ -594,29 +664,39 @@ async def async_wipe_logic(
     verify: bool = False,
     log_path: Optional[str] = None,
     allow_hardlinks: bool = False,
+    hash_before: bool = False,
+    no_log: bool = False,
+    trim: bool = False,
 ) -> WipeSummary:
     """Drive the async wipe engine for a list of files with a live dashboard.
 
     Args:
         files: Absolute paths of files to wipe.
         standard: Sanitization standard to apply.
-        verify: When ``True``, re-read and compare each file after wiping.
+        verify: When ``True``, re-read and compare each file after wiping
+            (always on for ``purge``).
         log_path: Optional path to a custom audit-log file.
         allow_hardlinks: Also wipe files that have several hard links.
+        hash_before: Record each file's SHA-256 in the audit log.
+        no_log: Do not write an audit log at all.
+        trim: After the batch, send one TRIM per filesystem that held a
+            successfully wiped file on SSD/NVMe.
 
     Returns:
         A :class:`~wiper.WipeSummary` aggregating the results.
     """
-    audit_logger = None
-    if log_path:
-        from audit import AuditLogger
-
+    if no_log:
+        audit_logger: AuditLogger = NullAuditLogger()
+    elif log_path:
         audit_logger = AuditLogger(log_path=Path(log_path))
+    else:
+        audit_logger = AuditLogger()
 
-    wiper = AsyncWiper(audit_logger=audit_logger)
+    wiper = AsyncWiper(audit_logger=audit_logger, hash_before=hash_before)
     summary = WipeSummary()
     summary.total_files = len(files)
     start_time = time.time()
+    trim_targets: dict[int, Path] = {}
 
     telemetry = WipeTelemetry()
     speed_tracker = SpeedTracker(window_seconds=2.0)
@@ -628,14 +708,23 @@ async def async_wipe_logic(
         transient=True,
     ) as live:
         for file_idx, filepath in enumerate(files, start=1):
+            file_path_obj = Path(filepath)
             try:
-                file_path_obj = Path(filepath)
                 file_size = file_path_obj.lstat().st_size
-            except Exception:
+            except OSError:
                 file_size = 0
+            try:
+                patterns = wiper.plan(file_path_obj, standard)
+            except Exception:
+                patterns = []
 
             telemetry.start_time = time.time()
             telemetry.current_pass = 0
+            telemetry.total_passes = max(1, len(patterns))
+            telemetry.pass_patterns = patterns
+            telemetry.algorithm = T(
+                "dash_algorithm_value", standard=standard.value, n=len(patterns)
+            )
             telemetry.file_size = file_size
             telemetry.current_file = filepath
             telemetry.bytes_written_total = 0
@@ -667,7 +756,7 @@ async def async_wipe_logic(
             w_res = WipeResult(
                 filepath=filepath,
                 success=result_dict.get("success", False),
-                error=result_dict.get("error", ""),
+                error=result_dict.get("error") or "",
                 bytes_written=file_size * result_dict.get("passes_completed", 0),
             )
             summary.results.append(w_res)
@@ -678,9 +767,20 @@ async def async_wipe_logic(
                 telemetry.finished = True
                 telemetry.bytes_written_total = w_res.bytes_written
                 live.update(_build_dashboard(telemetry, speed_tracker, file_idx, len(files)))
+                if trim and result_dict.get("storage_type") in _FLASH_TYPES:
+                    parent = file_path_obj.parent
+                    try:
+                        trim_targets.setdefault(os.stat(parent).st_dev, parent)
+                    except OSError:
+                        pass
             else:
                 summary.files_failed += 1
                 summary.errors.append(f"{filepath}: {w_res.error}")
+
+    # One TRIM per filesystem for the whole batch, not one per file.
+    for directory in trim_targets.values():
+        if await asyncio.to_thread(send_trim, directory):
+            summary.trims_sent += 1
 
     summary.total_duration = time.time() - start_time
     return summary
@@ -695,9 +795,20 @@ def wipe(
     confirm: bool = typer.Option(False, "--confirm", "-y", help="Saltar confirmación"),
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Vista previa sin borrar"),
     standard: str = typer.Option("clear", "--standard", "-s", help="Estándar: clear, purge, dod"),
-    verify: bool = typer.Option(False, "--verify", "-v", help="Verificar con entropía Shannon"),
+    verify: bool = typer.Option(
+        False, "--verify", "-v", help="Releer y comparar tras el borrado (siempre activo con purge)"
+    ),
     log_path: Optional[str] = typer.Option(
         None, "--log-path", "-l", help="Ruta personalizada para el log"
+    ),
+    no_log: bool = typer.Option(False, "--no-log", help="No escribir log de auditoría"),
+    hash_before: bool = typer.Option(
+        False,
+        "--hash",
+        help="Guardar en el log el SHA-256 previo de cada fichero (permite confirmar su contenido)",
+    ),
+    trim: bool = typer.Option(
+        False, "--trim", help="Enviar un TRIM por sistema de archivos al terminar (SSD/NVMe)"
     ),
     allow_hardlinks: bool = typer.Option(
         False,
@@ -737,7 +848,7 @@ def wipe(
         console.print(f"  [dim]{T('dangerous_target_hint')}[/]")
         raise typer.Exit(code=2)
 
-    files = collect_files(target)
+    files, dirs, _ = _expand_targets([target], allow_dangerous=True)
     if not files:
         console.print(f"\n  [bold yellow]{T('no_files_found')}[/] {target}")
         raise typer.Exit(code=0)
@@ -753,11 +864,25 @@ def wipe(
     info_table.add_row(T("lbl_type"), T("type_dir") if is_dir else T("type_file"))
     info_table.add_row(T("files_to_wipe"), str(len(files)))
     info_table.add_row(T("total_data"), format_bytes(total_size))
+    verify = verify or std_enum == SanitizationStandard.NIST_PURGE
     info_table.add_row(T("method"), f"Async Auto-Detect (Standard: {std_enum.value})")
     info_table.add_row(T("lbl_verify"), "Yes" if verify else "No")
-    if log_path:
-        info_table.add_row(T("lbl_audit_log"), log_path)
+    info_table.add_row(T("lbl_hash"), "Yes" if hash_before else "No")
+    if no_log:
+        info_table.add_row(T("lbl_audit_log"), "—")
+    else:
+        info_table.add_row(T("lbl_audit_log"), log_path or str(default_log_path()))
     console.print(info_table)
+
+    if std_enum == SanitizationStandard.NIST_PURGE:
+        console.print(f"  [dim]{T('purge_forces_verify')}[/]")
+
+    if std_enum != SanitizationStandard.NIST_CLEAR:
+        if storage.detect_storage_type(Path(target)) in (StorageType.SSD, StorageType.NVME):
+            console.print()
+            console.print(
+                Panel(T("ssd_purge_warning"), border_style="yellow", box=box.ROUNDED, padding=(1, 2))
+            )
 
     if dry_run:
         console.print(f"\n  [bold yellow]{T('dry_run_title')}[/]\n")
@@ -799,26 +924,20 @@ def wipe(
                 verify=verify,
                 log_path=log_path,
                 allow_hardlinks=allow_hardlinks,
+                hash_before=hash_before,
+                no_log=no_log,
+                trim=trim,
             )
         )
     except KeyboardInterrupt:
         console.print("\n[bold red]Interrumpido por el usuario.[/]")
         raise typer.Exit(1)
 
-    if is_dir:
-        for root, dirs, _ in os.walk(target, topdown=False):
-            for d in dirs:
-                try:
-                    os.rmdir(os.path.join(root, d))
-                except OSError:
-                    pass
-        try:
-            os.rmdir(target)
-        except OSError:
-            pass
-
-    _print_completion_panel()
+    _remove_empty_dirs(dirs)
     print_summary(summary)
+
+    if summary.files_failed or not summary.files_wiped:
+        raise typer.Exit(code=1)
 
 
 # ─── wipe-free-space ─────────────────────────────────────────────────────────
@@ -1092,47 +1211,49 @@ def version() -> None:
 # ─── Interactive session ──────────────────────────────────────────────────────
 
 
-def _parse_multi_paths(raw: str) -> list[str]:
-    """Parse a raw input string that may contain one or more file paths.
+def _strip_quotes(text: str) -> str:
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    return text
 
-    Handles paths with and without surrounding quotes and separates multiple
-    paths delimited by whitespace.
+
+def _parse_input_line(raw: str) -> list[str]:
+    """Parse a line typed or drag-and-dropped into the interactive session.
+
+    * If the whole line (without surrounding quotes) is an existing path,
+      it is taken as a single path, so unquoted names with spaces or
+      apostrophes work (``My Documents/it's mine.txt``).
+    * Otherwise the line is split like a shell would (:func:`shlex.split`):
+      quotes group words and, on POSIX, backslash-escaped spaces (as
+      inserted by macOS/Linux terminals on drag-and-drop) are honoured.
+      On Windows backslashes are path separators, not escapes.
 
     Args:
-        raw: Raw text as entered by the user (possibly drag-and-dropped from
-            the OS, which may wrap paths in quotes).
+        raw: Raw text as entered by the user.
 
     Returns:
         A list of non-empty path strings.
     """
-    paths: list[str] = []
-    i = 0
-    raw = raw.strip()
+    line = raw.strip()
+    if not line:
+        return []
+    whole = _strip_quotes(line)
+    if os.path.lexists(whole):
+        return [whole]
+    try:
+        tokens = shlex.split(line, posix=(os.name != "nt"))
+    except ValueError:  # unbalanced quotes
+        return [whole]
+    return [_strip_quotes(t) for t in tokens if t.strip()]
 
-    while i < len(raw):
-        if raw[i] in (" ", "\t"):
-            i += 1
-            continue
-        if raw[i] in ('"', "'"):
-            quote = raw[i]
-            end = raw.find(quote, i + 1)
-            if end == -1:
-                paths.append(raw[i + 1 :].strip())
-                break
-            paths.append(raw[i + 1 : end])
-            i = end + 1
-        else:
-            end = i
-            while end < len(raw) and raw[end] not in (" ", "\t", '"', "'"):
-                end += 1
-            paths.append(raw[i:end].strip())
-            i = end
 
-    return [p for p in paths if p]
+def _target_size(target: str) -> int:
+    """Total size of the entries that would be wiped for *target*."""
+    return sum(_lsize(f) for f in collect_files(target))
 
 
 def _print_file_preview(targets: list[str]) -> None:
-    """Render a Rich table previewing the files queued for wiping.
+    """Render a Rich table previewing the targets queued for wiping.
 
     Args:
         targets: List of absolute paths (files or directories) to preview.
@@ -1152,18 +1273,12 @@ def _print_file_preview(targets: list[str]) -> None:
     total_size = 0
     for idx, target in enumerate(targets, start=1):
         name = os.path.basename(target) or target
-        if os.path.isdir(target):
-            file_count = sum(len(files) for _, _, files in os.walk(target))
-            size = sum(
-                os.path.getsize(os.path.join(r, f))
-                for r, _, fs in os.walk(target)
-                for f in fs
-                if os.path.exists(os.path.join(r, f))
-            )
+        entries = collect_files(target)
+        size = sum(_lsize(f) for f in entries)
+        if os.path.isdir(target) and not os.path.islink(target):
             type_str = f"📁 {T('type_dir')}"
-            name_str = f"{name}/ [dim]({file_count} files)[/]"
+            name_str = f"{name}/ [dim]({len(entries)} files)[/]"
         else:
-            size = os.path.getsize(target) if os.path.exists(target) else 0
             type_str = f"📄 {T('type_file')}"
             name_str = name
 
@@ -1189,12 +1304,22 @@ def _print_session_hints() -> None:
     console.print(f"  [dim]{T('session_exit_hint')}[/]\n")
 
 
+def _confirm_interactive(has_dirs: bool) -> bool:
+    """Ask for confirmation; directories require typing a confirmation word."""
+    if has_dirs:
+        word = T("confirm_word")
+        return input(T("confirm_word_prompt", word=word)).strip() == word
+    return confirm_action()
+
+
 def interactive_session() -> None:
     """Run the interactive drag-and-drop wipe session.
 
     Prompts the user to enter or drag file paths, builds a queue, previews
-    it, then triggers the async wipe engine.  Loops until the user types an
-    exit keyword.
+    it, then triggers the async wipe engine through the same target
+    expansion as the ``wipe`` command (protected targets refused, links
+    never followed, directories expanded and removed once empty).  Loops
+    until the user types an exit keyword.
     """
     print_banner()
     console.print(f"  [bold cyan]{T('session_title')}[/]\n")
@@ -1202,7 +1327,6 @@ def interactive_session() -> None:
 
     while True:
         queued_targets: list[str] = []
-        skip_confirm = False
 
         while True:
             try:
@@ -1213,70 +1337,60 @@ def interactive_session() -> None:
                 console.print(f"\n  [bold cyan]{T('session_ended')}[/]")
                 return
 
-            if raw.rstrip().endswith("--force"):
-                raw = raw.rstrip()[: -len("--force")]
-                skip_confirm = True
-
-            cleaned = raw.strip().strip("'").strip('"').strip()
-
-            if not cleaned:
+            line = raw.strip()
+            if not line:
                 if queued_targets:
                     break
                 continue
 
-            if cleaned.lower() in EXIT_KEYWORDS[current_lang]:
+            if line.lower() in EXIT_KEYWORDS[current_lang] and not os.path.lexists(line):
                 console.print(f"\n  [bold cyan]{T('session_goodbye')}[/]")
                 return
 
-            parsed = _parse_multi_paths(raw) or [cleaned]
-
-            for p in parsed:
-                target = os.path.abspath(p.strip())
-                if not os.path.exists(target):
+            for p in _parse_input_line(raw):
+                target = os.path.abspath(p)
+                if not os.path.lexists(target):
                     console.print(f"  [bold red]{T('path_not_found')}[/] {target}")
+                    continue
+                danger = find_danger(target)
+                if danger:
+                    console.print(f"  [bold red]{T('dangerous_target')}[/] {danger}")
+                    console.print(f"  [dim]{T('dangerous_target_interactive')}[/]")
+                    continue
+                if target in queued_targets:
                     continue
 
                 queued_targets.append(target)
                 basename = os.path.basename(target) or target
-                size = (
-                    os.path.getsize(target)
-                    if os.path.isfile(target)
-                    else sum(
-                        os.path.getsize(os.path.join(r, f))
-                        for r, _, fs in os.walk(target)
-                        for f in fs
-                        if os.path.exists(os.path.join(r, f))
-                    )
-                )
                 console.print(
                     f"  [bright_green]✓[/] [bold]{basename}[/] "
-                    f"[dim]({format_bytes(size)})[/] — "
+                    f"[dim]({format_bytes(_target_size(target))})[/] — "
                     f"[bright_cyan]{T('queue_count', n=len(queued_targets))}[/]"
                 )
             console.print(f"  [dim]{T('queue_hint')}[/]")
 
+        files, dirs, errors = _expand_targets(queued_targets)
+        for err in errors:
+            console.print(f"  [bold red]{err}[/]")
+        if not files:
+            console.print(f"  [bold yellow]{T('no_files_found')}[/]\n")
+            _print_session_hints()
+            continue
+
         _print_file_preview(queued_targets)
 
-        if not skip_confirm:
-            if not confirm_action():
-                console.print(f"  [bold cyan]{T('op_cancelled')}[/]\n")
-                _print_session_hints()
-                continue
+        if not _confirm_interactive(has_dirs=bool(dirs)):
+            console.print(f"  [bold cyan]{T('op_cancelled')}[/]\n")
+            _print_session_hints()
+            continue
 
         try:
-            asyncio.run(async_wipe_logic(queued_targets))
-            console.print()
-            console.print(
-                Panel(
-                    Align.center(f"[bold bright_green]✅ {T('completion_msg')}[/]"),
-                    border_style="green",
-                    padding=(1, 2),
-                )
-            )
+            summary = asyncio.run(async_wipe_logic(files))
+            _remove_empty_dirs(dirs)
+            print_summary(summary)
             resp = console.input(f"\n  [dim]{T('continue_prompt')}[/]")
             if resp.strip().lower() in EXIT_KEYWORDS[current_lang]:
                 console.print(f"\n  [bold cyan]{T('session_goodbye')}[/]")
-                time.sleep(0.5)
                 break
         except KeyboardInterrupt:
             console.print("\n[bold red]Interrumpido por el usuario.[/]")

@@ -20,7 +20,6 @@ import ctypes
 import os
 import platform
 import re
-import struct
 import subprocess
 from abc import ABC, abstractmethod
 from enum import Enum
@@ -294,6 +293,51 @@ class _STORAGE_DEVICE_DESCRIPTOR_HEADER(ctypes.Structure):
     ]
 
 
+_K32 = None
+
+
+def _kernel32():
+    """Private ``kernel32`` instance with explicit prototypes.
+
+    Without ``restype`` / ``argtypes`` ctypes assumes ``int`` everywhere:
+    64-bit handles are truncated to 32 bits and pointers are passed with
+    the wrong width.  A private ``WinDLL`` keeps these prototypes from
+    leaking into other users of ``ctypes.windll.kernel32``.
+    """
+    global _K32
+    if _K32 is None:
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetVolumePathNameW.restype = wintypes.BOOL
+        k32.GetVolumePathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        k32.CreateFileW.restype = wintypes.HANDLE
+        k32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        k32.DeviceIoControl.restype = wintypes.BOOL
+        k32.DeviceIoControl.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        ]
+        k32.CloseHandle.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        _K32 = k32
+    return _K32
+
+
 def _detect_windows(path: Path) -> StorageType:
     try:
         import ctypes.wintypes  # noqa: F401 — imported for side-effects
@@ -314,7 +358,7 @@ def _detect_windows(path: Path) -> StorageType:
         bus = _query_bus_type(handle)
         return StorageType.NVME if bus == _BusTypeNvme else StorageType.SSD
     finally:
-        ctypes.windll.kernel32.CloseHandle(handle)
+        _kernel32().CloseHandle(handle)
 
 
 def _open_volume_handle_windows(path: Path) -> Optional[int]:
@@ -331,9 +375,7 @@ def _open_volume_handle_windows(path: Path) -> Optional[int]:
         A valid Win32 ``HANDLE`` cast to ``int``, or ``None`` on failure.
     """
     try:
-        import ctypes.wintypes  # noqa: F401
-
-        k32 = ctypes.windll.kernel32
+        k32 = _kernel32()
         vol_buf = ctypes.create_unicode_buffer(260)
         if not k32.GetVolumePathNameW(str(path), vol_buf, 260):
             return None
@@ -351,7 +393,7 @@ def _open_volume_handle_windows(path: Path) -> Optional[int]:
             0,
             None,
         )
-        if handle == _INVALID_HANDLE_VALUE:
+        if handle is None or handle == _INVALID_HANDLE_VALUE:
             return None
         return handle
     except Exception:
@@ -377,9 +419,9 @@ def _query_seek_penalty(handle: int) -> Optional[bool]:
     query.QueryType = _PropertyStandardQuery
 
     desc = _DEVICE_SEEK_PENALTY_DESCRIPTOR()
-    bytes_returned = ctypes.c_ulong(0)
+    bytes_returned = ctypes.wintypes.DWORD(0)
 
-    ok = ctypes.windll.kernel32.DeviceIoControl(
+    ok = _kernel32().DeviceIoControl(
         handle,
         _IOCTL_STORAGE_QUERY_PROPERTY,
         ctypes.byref(query),
@@ -412,9 +454,9 @@ def _query_bus_type(handle: int) -> Optional[int]:
 
     buf_size = 1024
     buf = ctypes.create_string_buffer(buf_size)
-    bytes_ret = ctypes.c_ulong(0)
+    bytes_ret = ctypes.wintypes.DWORD(0)
 
-    ok = ctypes.windll.kernel32.DeviceIoControl(
+    ok = _kernel32().DeviceIoControl(
         handle,
         _IOCTL_STORAGE_QUERY_PROPERTY,
         ctypes.byref(query),
