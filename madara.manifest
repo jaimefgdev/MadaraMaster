@@ -1,10 +1,16 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
 
+  <!--
+    "version" is required by Windows (a four-part number).  {version} is
+    filled in from madaramaster.__version__ by MadaraMaster.spec at build
+    time, so this file is a template and the version lives in one place.
+  -->
   <assemblyIdentity
-    processorArchitecture="amd64"
-    name="jaimefg1888.MadaraMaster"
     type="win32"
+    name="jaimefg1888.MadaraMaster"
+    version="{version}"
+    processorArchitecture="amd64"
   />
 
   <description>MadaraMaster — Secure File Sanitization Tool</description>
