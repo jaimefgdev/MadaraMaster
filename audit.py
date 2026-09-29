@@ -81,6 +81,7 @@ class AuditLogger:
                 "success": result.get("success", False),
                 "error": result.get("error"),
                 "strategy": result.get("strategy", "Unknown"),
+                "final_path": result.get("final_path"),
             }
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record) + "\n")

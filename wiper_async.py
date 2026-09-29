@@ -6,24 +6,31 @@
 #   1. Destrucción de metadatos de inodo (MFT / ext4 Journal)
 #      — MAC times → epoch 0 + renombrado múltiple con UUIDs de longitud
 #        variable para machacar registros de nombre en la MFT/Journal.
-#   2. Direct I/O (bypass absoluto de la caché de páginas del SO)
-#      — Linux : os.O_DIRECT | os.O_SYNC con buffers alineados a 4 096 B.
+#   2. Direct I/O (bypass de la caché de páginas del SO)
+#      — Linux : os.O_DIRECT | os.O_SYNC con buffers mmap alineados a 4 096 B
+#        (dirección, longitud y offset alineados).
 #      — Windows: FILE_FLAG_WRITE_THROUGH | FILE_FLAG_NO_BUFFERING vía
 #        ctypes + msvcrt.open_osfhandle.
-#      — Fallback automático a I/O normal si el FS rechaza O_DIRECT
-#        (FAT32, exFAT, tmpfs, etc.).
+#      — Fallback automático a I/O normal si el FS rechaza O_DIRECT.
 #   3. Destrucción de Slack Space y Alternate Data Streams
-#      — Slack Space: sobrescribe hasta el límite del clúster físico
-#        (ceil(st_size / 4096) * 4096) para eliminar basura residual.
+#      — Slack Space: cada pase cubre el fichero redondeado al clúster
+#        (ceil(st_size / 4096) * 4096), sobrescribiendo la cola del último
+#        clúster en su sitio.
 #      — ADS (Windows únicamente): enumera con FindFirstStreamW /
 #        FindNextStreamW y machaca cada flujo antes de borrar el archivo.
+#
+# Salvaguardas: los enlaces simbólicos/junctions nunca se siguen (solo se
+# elimina el enlace), los ficheros no regulares se omiten y los ficheros
+# con varios enlaces duros se rechazan salvo que se pida explícitamente.
 
 from __future__ import annotations
 
 import asyncio
 import ctypes
+import errno
 import hashlib
 import math
+import mmap
 import os
 import platform
 import random
@@ -32,13 +39,13 @@ import string
 import sys
 import time
 import uuid
-from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Optional
 
 import aiofiles
 
 from audit import AuditLogger
+from safety import is_link_like
 from storage import SanitizationStandard, StorageType, detect_storage_type
 from trim import send_trim
 
@@ -54,6 +61,7 @@ _GENERIC_READ = 0x80000000
 _FILE_SHARE_READ = 0x00000001
 _FILE_SHARE_WRITE = 0x00000002
 _OPEN_EXISTING = 3
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _INVALID_HANDLE_VALUE: int = ctypes.c_void_p(-1).value
 
 
@@ -161,35 +169,130 @@ def _destroy_metadata(path: Path) -> Path:
 # 2. Direct I/O  — OS page-cache bypass
 # ══════════════════════════════════════════════════════════════════════════════
 
+_O_NOFOLLOW: int = getattr(os, "O_NOFOLLOW", 0)
+_O_BINARY: int = getattr(os, "O_BINARY", 0)
+
+
+def _write_all(fd: int, buf: bytes | memoryview) -> None:
+    """Write *buf* completely to *fd*, retrying short writes.
+
+    Raises:
+        OSError: if ``write(2)`` reports that zero bytes were written.
+    """
+    view = memoryview(buf)
+    while len(view):
+        n = os.write(fd, view)
+        if n <= 0:
+            raise OSError(errno.EIO, "write() devolvió 0 bytes")
+        view = view[n:]
+
+
+def _check_identity(fd: int, expected: os.stat_result) -> None:
+    """Make sure *fd* refers to the regular file that was ``lstat``-ed before.
+
+    Closes the window in which a file could be swapped for a symlink or a
+    different file between the safety checks and the ``open`` call.
+
+    Raises:
+        OSError: if the opened file is not the expected one.
+    """
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) != (
+        expected.st_dev,
+        expected.st_ino,
+    ):
+        raise OSError(errno.ESTALE, "El fichero cambió entre la comprobación y la apertura")
+
 
 class _DirectIOContext:
     """Async write context that bypasses the OS page cache.
 
-    Exposes the same minimal interface as an ``aiofiles`` file object
-    (``seek`` / ``write`` / ``flush`` / ``fileno`` / ``close``) so the
-    overwrite loop can use it transparently regardless of whether true
-    Direct I/O is active.
+    ``O_DIRECT`` / ``FILE_FLAG_NO_BUFFERING`` require the *memory address*,
+    the length and the file offset of every write to be sector-aligned.
+    Python ``bytes`` objects are not aligned in memory, so in direct mode
+    every write is copied into a page-aligned anonymous ``mmap`` buffer
+    and padded to a multiple of :data:`_SECTOR_SIZE`.
+
+    If the kernel still rejects a direct write (``EINVAL``), the file is
+    reopened in buffered mode at the same offset and the write is retried,
+    so a wipe never fails just because Direct I/O is unavailable.
 
     All blocking calls are dispatched to a thread pool via
     ``asyncio.to_thread`` to avoid stalling the event loop.
 
     Attributes:
-        direct: ``True`` if the file was opened with ``O_DIRECT`` /
-            ``FILE_FLAG_NO_BUFFERING``.  ``False`` if the fallback buffered
-            I/O path is active.
+        direct: ``True`` while writes bypass the page cache.
         closed: ``True`` after :meth:`close` has been called.
     """
 
-    def __init__(self, fd: int, direct: bool) -> None:
+    def __init__(
+        self, fd: int, direct: bool, path: Path, identity: os.stat_result
+    ) -> None:
         self._fd = fd
+        self._path = path
+        self._identity = identity
+        self._buf: Optional[mmap.mmap] = None
         self.direct = direct
         self.closed = False
+
+    # ── synchronous helpers (run in a worker thread) ──────────────────────
+
+    def _write_aligned(self, data: bytes) -> None:
+        size = _aligned_size(len(data))
+        if self._buf is None or len(self._buf) < size:
+            if self._buf is not None:
+                self._buf.close()
+            self._buf = mmap.mmap(-1, size)  # page-aligned anonymous memory
+        chunk = memoryview(self._buf)[:size]
+        try:
+            chunk[: len(data)] = data
+            if size > len(data):
+                chunk[len(data) :] = bytes(size - len(data))
+            _write_all(self._fd, chunk)
+        finally:
+            chunk.release()
+
+    def _fallback_to_buffered(self) -> None:
+        pos = os.lseek(self._fd, 0, os.SEEK_CUR)
+        os.close(self._fd)
+        self._fd = os.open(str(self._path), os.O_WRONLY | _O_BINARY | _O_NOFOLLOW)
+        try:
+            _check_identity(self._fd, self._identity)
+            os.lseek(self._fd, pos, os.SEEK_SET)
+        except BaseException:
+            os.close(self._fd)
+            self.closed = True
+            raise
+        self.direct = False
+
+    def _write_sync(self, data: bytes) -> int:
+        if self.direct:
+            try:
+                self._write_aligned(data)
+                return len(data)
+            except OSError as exc:
+                if exc.errno not in (errno.EINVAL, errno.EOPNOTSUPP):
+                    raise
+                self._fallback_to_buffered()
+        _write_all(self._fd, data)
+        return len(data)
+
+    def _close_sync(self) -> None:
+        try:
+            os.close(self._fd)
+        finally:
+            if self._buf is not None:
+                self._buf.close()
+                self._buf = None
+
+    # ── async interface ───────────────────────────────────────────────────
 
     async def seek(self, offset: int) -> None:
         await asyncio.to_thread(os.lseek, self._fd, offset, os.SEEK_SET)
 
     async def write(self, data: bytes) -> int:
-        return await asyncio.to_thread(os.write, self._fd, data)
+        """Write all of *data*; returns ``len(data)`` or raises ``OSError``."""
+        return await asyncio.to_thread(self._write_sync, data)
 
     async def flush(self) -> None:
         await asyncio.to_thread(os.fsync, self._fd)
@@ -200,7 +303,7 @@ class _DirectIOContext:
     async def close(self) -> None:
         if not self.closed:
             self.closed = True
-            await asyncio.to_thread(os.close, self._fd)
+            await asyncio.to_thread(self._close_sync)
 
     async def __aenter__(self) -> "_DirectIOContext":
         return self
@@ -210,95 +313,74 @@ class _DirectIOContext:
 
 
 def _open_direct_linux(path: Path) -> tuple[int, bool]:
-    """Open *path* with ``O_DIRECT | O_SYNC`` on Linux.
+    """Open *path* with ``O_DIRECT | O_SYNC | O_NOFOLLOW`` on Linux.
 
-    ``O_DIRECT`` instructs the kernel to bypass the page cache for both
-    reads and writes, ensuring that wiped data is committed directly to the
-    storage device without lingering in RAM.  ``O_SYNC`` additionally
-    guarantees that each ``write(2)`` call blocks until the data reaches
-    stable storage.
-
-    If the underlying filesystem does not support ``O_DIRECT`` (FAT32,
-    exFAT, tmpfs, CIFS, and others return ``EINVAL`` or ``EOPNOTSUPP``),
-    the function falls back to plain ``O_WRONLY`` and returns
-    ``direct=False``.
-
-    Args:
-        path: File to open.
+    ``O_DIRECT`` bypasses the page cache and ``O_SYNC`` makes each
+    ``write(2)`` block until the data reaches stable storage.  If the
+    filesystem rejects ``O_DIRECT`` (tmpfs on older kernels, some FUSE and
+    network filesystems return ``EINVAL``), the file is opened buffered and
+    ``direct=False`` is returned.  ``O_NOFOLLOW`` makes the open fail on a
+    symlink instead of following it.
 
     Returns:
-        A ``(fd, direct)`` tuple where *direct* indicates whether
-        ``O_DIRECT`` is active.
+        A ``(fd, direct)`` tuple.
     """
-    # O_DIRECT may not be defined on all kernel ports; 0x4000 is the
-    # canonical value on x86/x86-64 Linux.
-    o_direct: int = getattr(os, "O_DIRECT", 0x4000)
-    flags_direct = os.O_WRONLY | os.O_SYNC | o_direct
-
-    try:
-        fd = os.open(str(path), flags_direct)
-        return fd, True
-    except OSError:
-        # Fallback: filesystem rejects O_DIRECT (FAT32, CIFS, tmpfs, etc.)
-        fd = os.open(str(path), os.O_WRONLY)
-        return fd, False
+    base = os.O_WRONLY | _O_NOFOLLOW
+    o_direct: int = getattr(os, "O_DIRECT", 0)
+    if o_direct:
+        try:
+            return os.open(str(path), base | os.O_SYNC | o_direct), True
+        except OSError as exc:
+            if exc.errno not in (errno.EINVAL, errno.EOPNOTSUPP):
+                raise
+    return os.open(str(path), base), False
 
 
 def _open_direct_windows(path: Path) -> tuple[int, bool]:
     """Open *path* with ``FILE_FLAG_WRITE_THROUGH | FILE_FLAG_NO_BUFFERING``.
 
-    These two flags together replicate the effect of ``O_DIRECT | O_SYNC``
-    on Linux:
-
-    * ``FILE_FLAG_NO_BUFFERING`` disables the Windows cache manager so
-      writes go directly to the disk controller's buffer.
-    * ``FILE_FLAG_WRITE_THROUGH`` ensures the disk controller flushes its
-      own buffer before reporting write completion.
-
-    The Win32 ``HANDLE`` is converted to a CRT file descriptor via
-    ``msvcrt.open_osfhandle`` so the rest of the code can use standard
-    ``os.write`` / ``os.lseek`` calls.
-
-    Falls back to a plain ``O_WRONLY | O_BINARY`` descriptor on failure.
-
-    Args:
-        path: File to open.
+    ``FILE_FLAG_OPEN_REPARSE_POINT`` prevents following a symlink or
+    junction.  The Win32 ``HANDLE`` is converted to a CRT file descriptor
+    via ``msvcrt.open_osfhandle`` so the rest of the code can use standard
+    ``os.write`` / ``os.lseek`` calls.  Falls back to a plain buffered
+    descriptor if ``CreateFileW`` fails.
 
     Returns:
         A ``(fd, direct)`` tuple.
     """
+    import msvcrt
+
+    k32 = ctypes.windll.kernel32
+    create_file = k32.CreateFileW
+    create_file.restype = ctypes.c_void_p  # HANDLE: avoid 32-bit truncation
+    handle = create_file(
+        str(path),
+        _GENERIC_WRITE,
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+        None,
+        _OPEN_EXISTING,
+        _FILE_FLAG_WRITE_THROUGH | _FILE_FLAG_NO_BUFFERING | _FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    if handle is None or handle == _INVALID_HANDLE_VALUE:
+        return os.open(str(path), os.O_WRONLY | _O_BINARY), False
     try:
-        import msvcrt
-
-        k32 = ctypes.windll.kernel32
-        handle = k32.CreateFileW(
-            str(path),
-            _GENERIC_WRITE,
-            _FILE_SHARE_READ | _FILE_SHARE_WRITE,
-            None,
-            _OPEN_EXISTING,
-            _FILE_FLAG_WRITE_THROUGH | _FILE_FLAG_NO_BUFFERING,
-            None,
-        )
-        if handle == _INVALID_HANDLE_VALUE:
-            raise OSError("CreateFileW falló")
-        fd = msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
-        return fd, True
-    except Exception:
-        fd = os.open(str(path), os.O_WRONLY | os.O_BINARY)
-        return fd, False
+        return msvcrt.open_osfhandle(handle, os.O_WRONLY | _O_BINARY), True
+    except OSError:
+        k32.CloseHandle(ctypes.c_void_p(handle))
+        raise
 
 
-async def _open_direct(path: Path) -> _DirectIOContext:
-    """Unified entry point: open *path* with Direct I/O where supported.
+async def _open_direct(path: Path, identity: os.stat_result) -> _DirectIOContext:
+    """Open *path* for writing with Direct I/O where supported.
 
-    Dispatches to the platform-specific opener in a thread pool and wraps
-    the result in a :class:`_DirectIOContext`.  The context transparently
-    falls back to buffered I/O when Direct I/O is not available, so callers
-    do not need to handle the distinction.
+    The opened descriptor is checked against *identity* (the ``lstat``
+    result taken during the safety checks) so a file swapped in the
+    meantime is never written.
 
     Args:
         path: File to open for writing.
+        identity: ``os.lstat`` result of the file that passed the checks.
 
     Returns:
         An async context manager ready for writing.
@@ -307,39 +389,21 @@ async def _open_direct(path: Path) -> _DirectIOContext:
     def _open_sync() -> tuple[int, bool]:
         sys_name = platform.system().lower()
         if sys_name == "linux":
-            return _open_direct_linux(path)
-        if sys_name == "windows":
-            return _open_direct_windows(path)
-        # macOS: O_DIRECT does not exist.  F_NOCACHE via fcntl is the
-        # equivalent, but it requires IOKit bindings.  Use plain O_WRONLY.
-        fd = os.open(str(path), os.O_WRONLY)
-        return fd, False
+            fd, direct = _open_direct_linux(path)
+        elif sys_name == "windows":
+            fd, direct = _open_direct_windows(path)
+        else:
+            # macOS has no O_DIRECT; F_NOCACHE is not used yet.
+            fd, direct = os.open(str(path), os.O_WRONLY | _O_NOFOLLOW), False
+        try:
+            _check_identity(fd, identity)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd, direct
 
     fd, direct = await asyncio.to_thread(_open_sync)
-    return _DirectIOContext(fd, direct)
-
-
-def _make_aligned_buffer(data: bytes) -> bytes:
-    """Pad *data* to a multiple of :data:`_SECTOR_SIZE` with zero bytes.
-
-    ``O_DIRECT`` / ``FILE_FLAG_NO_BUFFERING`` require the buffer length
-    (and the file offset) to be a multiple of the logical sector size
-    (typically 4 096 bytes).  If *data* already satisfies this constraint it
-    is returned unchanged to avoid an unnecessary copy.
-
-    The zero padding written beyond ``file_size`` is harmless: a dedicated
-    slack-space pass later overwrites that region with random data.
-
-    Args:
-        data: Raw bytes to be written.
-
-    Returns:
-        *data* padded to the next sector boundary.
-    """
-    remainder = len(data) % _SECTOR_SIZE
-    if remainder == 0:
-        return data
-    return data + b"\x00" * (_SECTOR_SIZE - remainder)
+    return _DirectIOContext(fd, direct, path, identity)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -347,38 +411,22 @@ def _make_aligned_buffer(data: bytes) -> bytes:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def _wipe_slack_space(ctx: _DirectIOContext, file_size: int) -> None:
-    """Overwrite the slack space between EOF and the cluster boundary.
+def _pass_length(file_size: int) -> int:
+    """Number of bytes each overwrite pass writes for a file of *file_size*.
 
-    Most filesystems allocate storage in fixed-size clusters (typically
-    4 096 bytes).  When a file does not fill its last cluster, the remaining
-    bytes — the *slack space* — may contain residual data from a previously
-    deleted file.  This function overwrites those bytes with cryptographic
-    random data.
-
-    If ``file_size`` is already an exact multiple of :data:`_CLUSTER_SIZE`
-    there is no slack space and the function returns immediately.
-
-    Writes beyond EOF may be silently rejected by some filesystems (NTFS
-    compressed files, FAT); any ``OSError`` is caught and ignored.
+    The file is rounded up to a whole cluster (:data:`_CLUSTER_SIZE`).
+    Writing the tail of the last cluster in place overwrites its slack
+    space — the bytes between EOF and the cluster boundary that may hold
+    residue of older files — with the same pattern as the rest of the
+    pass.  It also keeps every direct write sector-aligned.
 
     Args:
-        ctx: Open :class:`_DirectIOContext` for the file being wiped.
         file_size: Logical size of the file in bytes.
-    """
-    padded = _aligned_size(file_size, _CLUSTER_SIZE)
-    slack = padded - file_size
-    if slack <= 0:
-        return
 
-    try:
-        await ctx.seek(file_size)
-        data = await asyncio.to_thread(os.urandom, slack)
-        aligned = _make_aligned_buffer(data)
-        await ctx.write(aligned[: _aligned_size(slack)])
-        await ctx.flush()
-    except OSError:
-        pass
+    Returns:
+        ``file_size`` rounded up to a multiple of :data:`_CLUSTER_SIZE`.
+    """
+    return _aligned_size(file_size, _CLUSTER_SIZE)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -531,34 +579,41 @@ class AsyncWiper:
         standard: SanitizationStandard = SanitizationStandard.NIST_CLEAR,
         verify: bool = False,
         progress_callback: ProgressCallbackType = None,
+        allow_hardlinks: bool = False,
     ) -> dict[str, Any]:
         """Securely erase a single file.
 
         Execution order:
 
-        1. ADS enumeration and wiping (Windows only).
-        2. Open the file with Direct I/O (falls back if unsupported).
-        3. Overwrite with the pass sequence dictated by *standard* and
-           the detected storage type.
-        4. Overwrite the slack space between EOF and the cluster boundary.
-        5. Optionally verify by sampling Shannon entropy.
-        6. Destroy inode metadata (timestamps + multi-rename).
-        7. Delete the file.
-        8. Send TRIM to the storage controller (SSD/NVMe only).
-        9. Write an audit-log record.
-
-        The :class:`_DirectIOContext` is always closed in a ``finally``
-        block, even when an ``OSError`` occurs mid-pass.
+        1. Safety checks on ``lstat``: a symlink or junction is unlinked
+           without being followed; anything that is not a regular file is
+           refused; a file with several hard links is refused unless
+           *allow_hardlinks* is set.
+        2. ADS enumeration and wiping (Windows only).
+        3. Open the file with Direct I/O (falls back if unsupported) and
+           check that the descriptor is the file that passed step 1.
+        4. Overwrite with the pass sequence dictated by *standard* and the
+           detected storage type.  Every pass covers the file rounded up
+           to a whole cluster, which also overwrites the slack space.
+        5. Optionally verify: re-read the file and compare it with the
+           SHA-256 of what the last pass wrote.  On mismatch the file is
+           **not** deleted.
+        6. Destroy inode metadata (timestamps + multi-rename) and delete.
+           If the delete fails the operation is reported as failed with
+           the file's current path.
+        7. Send TRIM to the storage controller (SSD/NVMe only).
+        8. Write an audit-log record.
 
         Args:
             path: Absolute path to the file to wipe.
             standard: Sanitization standard that controls the number of
                 passes for HDDs.
-            verify: When ``True``, read random blocks after wiping and
-                verify Shannon entropy (≥ 7.0 bits/byte for random passes,
-                ≤ 0.1 for deterministic passes).
+            verify: Re-read and compare the file after the last pass.
             progress_callback: Optional async or sync callable with
                 signature ``(path, pass_index, bytes_written, file_size)``.
+            allow_hardlinks: Wipe files with more than one hard link.
+                Overwriting such a file also destroys the data seen
+                through its other names.
 
         Returns:
             A dictionary with the following keys:
@@ -573,6 +628,8 @@ class AsyncWiper:
             * ``direct_io`` (bool)
             * ``ads_wiped`` (int)
             * ``slack_wiped`` (bool)
+            * ``final_path`` (str | None) — where the file still is when
+              it could not be deleted
         """
         result: dict[str, Any] = {
             "success": False,
@@ -585,17 +642,39 @@ class AsyncWiper:
             "direct_io": False,
             "ads_wiped": 0,
             "slack_wiped": False,
+            "final_path": None,
         }
 
+        path = Path(path)
         sha256_before = "unknown"
         file_size_for_audit = 0
-        current_path = path
 
         try:
-            if not path.exists():
-                raise FileNotFoundError(f"No se encuentra el archivo: {path}")
+            try:
+                st = path.lstat()
+            except FileNotFoundError:
+                raise FileNotFoundError(f"No se encuentra el archivo: {path}") from None
 
-            file_size_for_audit = path.stat().st_size
+            # ── 1. Safety checks ──────────────────────────────────────────
+            if is_link_like(st):
+                # Never follow a link: overwriting it would destroy its target.
+                await asyncio.to_thread(os.unlink, path)
+                result["strategy"] = "Enlace (eliminado sin seguirlo)"
+                result["success"] = True
+                self._audit(path, 0, sha256_before, standard, result)
+                return result
+
+            if not stat.S_ISREG(st.st_mode):
+                raise ValueError(f"No es un fichero regular, se omite: {path}")
+
+            if st.st_nlink > 1 and not allow_hardlinks:
+                raise ValueError(
+                    f"El fichero tiene {st.st_nlink} enlaces duros; sobrescribirlo "
+                    "destruiría también los datos de los otros nombres. "
+                    "Usa --allow-hardlinks para forzarlo."
+                )
+
+            file_size_for_audit = st.st_size
             _ensure_writable(path)
             storage_type = detect_storage_type(path)
 
@@ -613,82 +692,80 @@ class AsyncWiper:
             passes_done = 0
             start_time = time.time()
 
-            # ── 3b. ADS: enumerate and destroy before touching the main
-            #         stream, while FindFirstStreamW can still find them.
+            # ── 2. ADS: enumerate and destroy before touching the main
+            #        stream, while FindFirstStreamW can still find them.
             if sys.platform == "win32":
                 ads_before = await asyncio.to_thread(_enumerate_ads_windows, path)
                 await _wipe_ads_windows(path, buffer_size)
                 result["ads_wiped"] = len(ads_before)
 
-            # ── 2. Open with Direct I/O ───────────────────────────────────
-            ctx = await _open_direct(path)
+            # ── 3. Open with Direct I/O ───────────────────────────────────
+            ctx = await _open_direct(path, st)
             result["direct_io"] = ctx.direct
 
+            # ── 4. Overwrite passes (slack space included) ────────────────
+            file_size = file_size_for_audit
+            pass_len = _pass_length(file_size)
+            last_digest: Optional[str] = None
             try:
                 for pass_idx, pattern_type in enumerate(passes_config, 1):
                     await ctx.seek(0)
-                    remaining = file_size_for_audit
-                    bytes_this_pass = 0
+                    is_last = pass_idx == len(passes_config)
+                    hasher = hashlib.sha256() if verify and is_last else None
+                    written = 0
 
-                    while remaining > 0:
-                        raw_chunk = min(remaining, buffer_size)
-                        data = await self._generate_pattern(pattern_type, raw_chunk)
-
-                        if ctx.direct:
-                            data = _make_aligned_buffer(data)
-
-                        written = await ctx.write(data)
-                        logical = min(raw_chunk, written) if written else raw_chunk
-                        remaining -= logical
-                        bytes_this_pass += logical
-
-                        if progress_callback:
-                            if asyncio.iscoroutinefunction(progress_callback):
-                                await progress_callback(
-                                    path, pass_idx, bytes_this_pass, file_size_for_audit
-                                )
-                            else:
-                                progress_callback(
-                                    path, pass_idx, bytes_this_pass, file_size_for_audit
-                                )
+                    while written < pass_len:
+                        chunk_len = min(pass_len - written, buffer_size)
+                        data = await self._generate_pattern(pattern_type, chunk_len)
+                        if hasher is not None and written < file_size:
+                            hasher.update(memoryview(data)[: file_size - written])
+                        await ctx.write(data)
+                        written += chunk_len
+                        await self._report_progress(
+                            progress_callback, path, pass_idx, min(written, file_size), file_size
+                        )
 
                     await ctx.flush()
                     passes_done += 1
+                    if hasher is not None:
+                        last_digest = hasher.hexdigest()
 
-                # ── 3a. Slack Space ───────────────────────────────────────
-                await _wipe_slack_space(ctx, file_size_for_audit)
-                result["slack_wiped"] = True
-
+                result["slack_wiped"] = passes_done > 0 and pass_len > 0
+                result["direct_io"] = ctx.direct
             finally:
                 # Always close the descriptor, even on mid-pass I/O errors.
                 await ctx.close()
 
             result["duration"] = time.time() - start_time
             result["passes_completed"] = passes_done
-            result["success"] = True
 
+            # ── 5. Verification ───────────────────────────────────────────
             if verify:
-                verified = await self._verify_entropy(
-                    path, expected_pattern=passes_config[-1]
-                )
+                verified = await self._verify_written(path, file_size, last_digest)
                 result["verified"] = verified
                 if not verified:
-                    result["error"] = "Verificación de entropía fallida"
-                    result["success"] = False
+                    raise _VerificationFailed(
+                        "Verificación fallida: el contenido leído no coincide con el "
+                        f"último pase. El fichero NO se ha eliminado: {path}"
+                    )
             else:
                 result["verified"] = None
 
-            # ── 1. Metadata destruction + unlink ─────────────────────────
+            # ── 6. Metadata destruction + unlink ─────────────────────────
+            current_path = path
             try:
                 current_path = await asyncio.to_thread(_destroy_metadata, path)
-                current_path.unlink()
-            except Exception as exc:
-                result["error"] = (
-                    f"Borrado completado pero fallo al eliminar inodo: {exc}"
-                )
+                await asyncio.to_thread(current_path.unlink)
+            except OSError as exc:
+                result["final_path"] = str(current_path)
+                raise OSError(
+                    f"Sobrescrito pero NO eliminado; el fichero sigue en {current_path}: {exc}"
+                ) from exc
 
-            # ── TRIM (SSD/NVMe only) ──────────────────────────────────────
-            if result["success"] and storage_type in (StorageType.SSD, StorageType.NVME):
+            result["success"] = True
+
+            # ── 7. TRIM (SSD/NVMe only) ───────────────────────────────────
+            if storage_type in (StorageType.SSD, StorageType.NVME):
                 trim_ok = await asyncio.to_thread(send_trim, path)
                 result["trim_sent"] = trim_ok
 
@@ -696,19 +773,36 @@ class AsyncWiper:
             result["error"] = str(exc)
             result["success"] = False
 
-        self.audit.log_wipe_operation(
-            path,
-            file_size_for_audit,
-            sha256_before,
-            standard.value,
-            result,
-        )
-
+        self._audit(path, file_size_for_audit, sha256_before, standard, result)
         return result
 
     # ─────────────────────────────────────────────────────────────────────────
     # Internal helpers
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _audit(
+        self,
+        path: Path,
+        file_size: int,
+        sha256_before: str,
+        standard: SanitizationStandard,
+        result: dict[str, Any],
+    ) -> None:
+        self.audit.log_wipe_operation(path, file_size, sha256_before, standard.value, result)
+
+    @staticmethod
+    async def _report_progress(
+        callback: ProgressCallbackType,
+        path: Path,
+        pass_idx: int,
+        bytes_done: int,
+        file_size: int,
+    ) -> None:
+        if not callback:
+            return
+        ret = callback(path, pass_idx, bytes_done, file_size)
+        if asyncio.iscoroutine(ret):
+            await ret
 
     def _get_passes_config(
         self,
@@ -767,66 +861,57 @@ class AsyncWiper:
             return "hash_error"
         return sha256.hexdigest()
 
-    async def _verify_entropy(
+    async def _verify_written(
         self,
         path: Path,
-        expected_pattern: str = "random",
-        sample_count: int = 20,
-        block_size: int = 4096,
+        file_size: int,
+        expected_digest: Optional[str],
     ) -> bool:
-        """Verify that the file's contents match the expected entropy profile.
+        """Re-read the first *file_size* bytes and compare with the last pass.
 
-        Samples *sample_count* random 4 KB blocks and computes the average
-        Shannon entropy.  A value above 7.0 bits/byte indicates a random
-        distribution (expected after a random-overwrite pass); below 0.1
-        indicates a uniform pattern (zeros or ones).
+        The comparison is exact: the SHA-256 of what the last pass wrote
+        over the file's logical range is compared with the SHA-256 of what
+        is read back.  On Linux the page cache for the file is dropped first
+        (``POSIX_FADV_DONTNEED``) so the data comes from the device.
 
         Args:
-            path: File to verify.
-            expected_pattern: ``"random"`` or any deterministic pattern
-                string.
-            sample_count: Number of blocks to sample.
-            block_size: Size of each sampled block in bytes.
+            path: File to verify (still present on disk).
+            file_size: Original logical size of the file.
+            expected_digest: Digest recorded while writing the last pass.
 
         Returns:
-            ``True`` if the entropy matches the expectation, ``False``
-            otherwise.
+            ``True`` if the contents match, ``False`` otherwise.
         """
-        if not path.exists() or path.stat().st_size == 0:
+        if file_size == 0:
             return True
-
-        file_size = path.stat().st_size
-
-        def calc_entropy(data: bytes) -> float:
-            if not data:
-                return 0.0
-            counter = Counter(data)
-            length = len(data)
-            return -sum(
-                (c / length) * math.log2(c / length) for c in counter.values()
-            )
-
-        total_entropy = 0.0
-        samples_taken = 0
-
-        try:
-            async with aiofiles.open(path, "rb") as f:
-                for _ in range(sample_count):
-                    offset = (
-                        random.randint(0, max(0, file_size - block_size))
-                        if file_size > block_size
-                        else 0
-                    )
-                    await f.seek(offset)
-                    data = await f.read(block_size)
-                    if data:
-                        total_entropy += calc_entropy(data)
-                        samples_taken += 1
-        except Exception:
+        if expected_digest is None:
             return False
 
-        if samples_taken == 0:
-            return True
+        def _read_sync() -> bool:
+            fd = os.open(str(path), os.O_RDONLY | _O_BINARY | _O_NOFOLLOW)
+            try:
+                if hasattr(os, "posix_fadvise"):
+                    try:
+                        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+                    except OSError:
+                        pass
+                sha256 = hashlib.sha256()
+                remaining = file_size
+                while remaining > 0:
+                    chunk = os.read(fd, min(remaining, 1024 * 1024))
+                    if not chunk:
+                        return False
+                    sha256.update(chunk)
+                    remaining -= len(chunk)
+                return sha256.hexdigest() == expected_digest
+            finally:
+                os.close(fd)
 
-        avg_entropy = total_entropy / samples_taken
-        return avg_entropy > 7.0 if expected_pattern == "random" else avg_entropy < 0.1
+        try:
+            return await asyncio.to_thread(_read_sync)
+        except OSError:
+            return False
+
+
+class _VerificationFailed(Exception):
+    """The re-read contents did not match the last overwrite pass."""
