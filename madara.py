@@ -33,6 +33,7 @@ from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
+from safety import find_danger
 from storage import SanitizationStandard
 from trim import send_trim
 from utils import format_bytes
@@ -152,6 +153,10 @@ LANG: dict[str, dict[str, str]] = {
         "wfs_duration": "Duration",
         "wfs_error": "Error during free-space wipe",
         "wfs_dry": "DRY RUN — target directory:",
+        "dangerous_target": "✗ Refusing to wipe a protected target:",
+        "dangerous_target_hint": "Use --allow-dangerous-target only if you are absolutely sure.",
+        "confirm_type_name": "  Type the directory name ({name}) to confirm",
+        "wfs_cleanup_failed": "Could not remove the fill file — delete it manually:",
     },
     "ES": {
         "session_title": "Modo Sesión Interactiva",
@@ -243,6 +248,10 @@ LANG: dict[str, dict[str, str]] = {
         "wfs_duration": "Duración",
         "wfs_error": "Error durante el borrado de espacio libre",
         "wfs_dry": "SIMULACIÓN — directorio objetivo:",
+        "dangerous_target": "✗ Objetivo protegido, no se borrará:",
+        "dangerous_target_hint": "Usa --allow-dangerous-target solo si estás completamente seguro.",
+        "confirm_type_name": "  Escribe el nombre del directorio ({name}) para confirmar",
+        "wfs_cleanup_failed": "No se pudo eliminar el archivo de relleno; bórralo a mano:",
     },
 }
 
@@ -296,6 +305,14 @@ def T(key: str, **kwargs: object) -> str:
     """
     text = LANG[current_lang].get(key, key)
     return text.format(**kwargs) if kwargs else text
+
+
+def _lsize(path: str) -> int:
+    """Size of *path* without following symlinks (0 if it vanished)."""
+    try:
+        return os.lstat(path).st_size
+    except OSError:
+        return 0
 
 
 # ─── UI helpers ──────────────────────────────────────────────────────────────
@@ -576,14 +593,16 @@ async def async_wipe_logic(
     standard: SanitizationStandard = SanitizationStandard.NIST_CLEAR,
     verify: bool = False,
     log_path: Optional[str] = None,
+    allow_hardlinks: bool = False,
 ) -> WipeSummary:
     """Drive the async wipe engine for a list of files with a live dashboard.
 
     Args:
         files: Absolute paths of files to wipe.
         standard: Sanitization standard to apply.
-        verify: When ``True``, verify entropy after each file.
+        verify: When ``True``, re-read and compare each file after wiping.
         log_path: Optional path to a custom audit-log file.
+        allow_hardlinks: Also wipe files that have several hard links.
 
     Returns:
         A :class:`~wiper.WipeSummary` aggregating the results.
@@ -611,7 +630,7 @@ async def async_wipe_logic(
         for file_idx, filepath in enumerate(files, start=1):
             try:
                 file_path_obj = Path(filepath)
-                file_size = file_path_obj.stat().st_size if file_path_obj.exists() else 0
+                file_size = file_path_obj.lstat().st_size
             except Exception:
                 file_size = 0
 
@@ -642,6 +661,7 @@ async def async_wipe_logic(
                 standard=standard,
                 verify=verify,
                 progress_callback=progress_callback,
+                allow_hardlinks=allow_hardlinks,
             )
 
             w_res = WipeResult(
@@ -679,6 +699,16 @@ def wipe(
     log_path: Optional[str] = typer.Option(
         None, "--log-path", "-l", help="Ruta personalizada para el log"
     ),
+    allow_hardlinks: bool = typer.Option(
+        False,
+        "--allow-hardlinks",
+        help="Borrar también ficheros con varios enlaces duros (destruye los datos de todos sus nombres)",
+    ),
+    allow_dangerous_target: bool = typer.Option(
+        False,
+        "--allow-dangerous-target",
+        help="Permitir objetivos protegidos: raíz, HOME, directorios del sistema, puntos de montaje",
+    ),
 ) -> None:
     """🧹 Borrado seguro con motor Async (NIST SP 800-88 / DoD 5220.22-M)."""
     print_banner()
@@ -697,17 +727,23 @@ def wipe(
         console.print(f"\n  [bold red]Estándar inválido:[/] {standard}. Válidos: clear, purge, dod")
         raise typer.Exit(code=1)
 
-    if not os.path.exists(target):
+    if not os.path.lexists(target):
         console.print(f"\n  [bold red]{T('target_not_found')}[/] {target}")
         raise typer.Exit(code=1)
+
+    danger = find_danger(target)
+    if danger and not allow_dangerous_target:
+        console.print(f"\n  [bold red]{T('dangerous_target')}[/] {danger}")
+        console.print(f"  [dim]{T('dangerous_target_hint')}[/]")
+        raise typer.Exit(code=2)
 
     files = collect_files(target)
     if not files:
         console.print(f"\n  [bold yellow]{T('no_files_found')}[/] {target}")
         raise typer.Exit(code=0)
 
-    total_size = sum(os.path.getsize(f) for f in files if os.path.exists(f))
-    is_dir = os.path.isdir(target)
+    total_size = sum(_lsize(f) for f in files)
+    is_dir = os.path.isdir(target) and not os.path.islink(target)
 
     console.print()
     info_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
@@ -726,7 +762,7 @@ def wipe(
     if dry_run:
         console.print(f"\n  [bold yellow]{T('dry_run_title')}[/]\n")
         for f in files[:50]:
-            size = os.path.getsize(f) if os.path.exists(f) else 0
+            size = _lsize(f)
             console.print(f"    [dim]•[/] {f} [dim]({format_bytes(size)})[/]")
         if len(files) > 50:
             console.print(f"    [dim]{T('more_files', n=len(files) - 50)}[/]")
@@ -743,7 +779,13 @@ def wipe(
             )
         )
         console.print()
-        if not typer.confirm(T("confirm_prompt"), default=False):
+        if is_dir:
+            expected = os.path.basename(target)
+            typed = typer.prompt(T("confirm_type_name", name=expected), default="")
+            confirmed = typed.strip() == expected
+        else:
+            confirmed = typer.confirm(T("confirm_prompt"), default=False)
+        if not confirmed:
             console.print(f"\n  [bold cyan]{T('op_cancelled')}[/]")
             raise typer.Exit(code=0)
 
@@ -751,7 +793,13 @@ def wipe(
 
     try:
         summary = asyncio.run(
-            async_wipe_logic(files, standard=std_enum, verify=verify, log_path=log_path)
+            async_wipe_logic(
+                files,
+                standard=std_enum,
+                verify=verify,
+                log_path=log_path,
+                allow_hardlinks=allow_hardlinks,
+            )
         )
     except KeyboardInterrupt:
         console.print("\n[bold red]Interrumpido por el usuario.[/]")
@@ -779,6 +827,7 @@ def wipe(
 async def _async_wipe_free_space(
     target_dir: Path,
     update_fn: Optional[object] = None,
+    trim: bool = True,
 ) -> dict[str, object]:
     """Fill all free space on the filesystem with zeros to defeat wear-leveling.
 
@@ -793,6 +842,11 @@ async def _async_wipe_free_space(
         target_dir: Directory on the target filesystem.
         update_fn: Optional callable ``(bytes_written, chunk_index)`` that
             the live dashboard wires to a progress display.
+        trim: Send TRIM after removing the fill file.
+
+    The fill file is removed in a ``finally`` block, so it is deleted on
+    errors, ``Ctrl+C`` and task cancellation too.  ``success`` is ``True``
+    only if the fill completed **and** the fill file was removed.
 
     Returns:
         Result dict with keys ``success``, ``bytes_written``, ``duration``,
@@ -811,59 +865,53 @@ async def _async_wipe_free_space(
     start = time.time()
     total_bw = 0
     chunk_idx = 0
+    removed = False
 
     try:
-        async with aiofiles.open(tmp_path, "wb") as f:
-            # Phase 1 — 64 MB blocks until ENOSPC
-            while True:
-                try:
-                    await f.write(_ZEROS_LARGE)
-                    total_bw += _FILL_CHUNK_LARGE
+        # Unbuffered: ENOSPC surfaces on write() itself instead of being
+        # deferred to flush()/close(), and short writes are counted exactly.
+        async with aiofiles.open(tmp_path, "wb", buffering=0) as f:
+            # Phase 1 — 64 MB blocks until ENOSPC; Phase 2 — 4 KB blocks to
+            # cover the final partial cluster.
+            for block in (_ZEROS_LARGE, _ZEROS_SMALL):
+                while True:
+                    try:
+                        n = await f.write(block)
+                    except OSError as exc:
+                        if exc.errno != errno.ENOSPC:
+                            raise
+                        break
+                    if not n:
+                        break
+                    total_bw += n
                     chunk_idx += 1
                     if update_fn:
                         update_fn(total_bw, chunk_idx)
-                except OSError as exc:
-                    if exc.errno != errno.ENOSPC:
-                        raise
-                    break
-
-            # Phase 2 — 4 KB blocks to cover the final partial cluster
-            while True:
-                try:
-                    await f.write(_ZEROS_SMALL)
-                    total_bw += _FILL_CHUNK_SMALL
-                except OSError as exc:
-                    if exc.errno != errno.ENOSPC:
-                        raise
-                    break
 
             # Phase 3 — commit to physical media
-            await f.flush()
             await asyncio.to_thread(os.fsync, f.fileno())
 
     except Exception as exc:
         result["error"] = str(exc)
+
+    finally:
+        # Runs on errors, Ctrl+C and task cancellation alike: never leave
+        # the disk full.
         try:
             tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        result["duration"] = time.time() - start
-        return result
+            removed = True
+        except OSError as exc:
+            cleanup_error = f"{T('wfs_cleanup_failed')} {tmp_path} ({exc})"
+            result["error"] = (
+                f"{result['error']}; {cleanup_error}" if result["error"] else cleanup_error
+            )
 
-    try:
-        tmp_path.unlink()
-    except OSError as exc:
-        result["error"] = f"No se pudo eliminar el archivo de relleno: {exc}"
-
-    trim_ok = await asyncio.to_thread(send_trim, target_dir)
-    result.update(
-        {
-            "trim_sent": trim_ok,
-            "bytes_written": total_bw,
-            "duration": time.time() - start,
-            "success": True,
-        }
-    )
+    result["bytes_written"] = total_bw
+    if result["error"] is None and removed:
+        if trim:
+            result["trim_sent"] = await asyncio.to_thread(send_trim, target_dir)
+        result["success"] = True
+    result["duration"] = time.time() - start
     return result
 
 
@@ -990,6 +1038,7 @@ def wipe_free_space_cmd(
                 return await _async_wipe_free_space(
                     target_dir,
                     update_fn=lambda bw, ci: (_update(bw, ci), live.update(_build_wfs_panel())),
+                    trim=not no_trim,
                 )
 
             result = asyncio.run(_run())

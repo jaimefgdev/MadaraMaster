@@ -11,10 +11,11 @@ Secure file destruction tool. MadaraMaster overwrites files following NIST SP 80
 - **Automatic storage detection** — distinguishes HDD, SSD, and NVMe on Linux, Windows, and macOS and adjusts the strategy accordingly.
 - **Async engine** built with `aiofiles` and adaptive buffers (50 MB for SSD/NVMe, 10 MB for HDD).
 - **Direct I/O** — bypasses the OS page cache (`O_DIRECT | O_SYNC` on Linux; `FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH` on Windows) to ensure wiped data is never silently re-cached.
-- **Slack space destruction** — overwrites the gap between file EOF and the cluster boundary with random bytes.
+- **Slack space destruction** — every pass covers the file rounded up to a whole cluster, so the gap between EOF and the cluster boundary is overwritten too.
 - **ADS destruction** (Windows only) — enumerates and wipes every Alternate Data Stream via `FindFirstStreamW` / `FindNextStreamW`.
 - **Inode metadata scrubbing** — zeros all MAC timestamps and performs 3–5 renames with variable-length names to overwrite MFT / ext4 journal entries.
-- **Optional `--verify` flag** — samples random blocks after wiping and checks Shannon entropy; below 7.0 bits/byte marks the operation as failed.
+- **Optional `--verify` flag** — re-reads the file after the last pass and compares it with the SHA-256 of what was written; on mismatch the operation fails and the file is **not** deleted.
+- **Safety checks** — symlinks and junctions are never followed (only the link is removed), non-regular files are skipped, files with several hard links are refused unless `--allow-hardlinks` is given, and protected targets (filesystem roots, your home directory, system directories, mount points) are refused unless `--allow-dangerous-target` is given. Wiping a directory asks you to type its name.
 - **Audit log** — every operation is recorded in `madara_audit.jsonl` with pre-wipe SHA-256, UTC timestamps, user, hostname, and result.
 - **Interactive session** — argumentless mode where you can drag files into the terminal, queue them, and wipe them all at once.
 
@@ -61,8 +62,10 @@ python madara.py wipe data.pdf --log-path /var/log/madara_audit.jsonl
 | `--confirm` | `-y` | Skip confirmation prompt |
 | `--dry-run` | `-n` | Preview targets without wiping |
 | `--standard` | `-s` | `clear`, `purge`, or `dod` |
-| `--verify` | `-v` | Verify Shannon entropy after wipe |
+| `--verify` | `-v` | Re-read and compare after wiping; keep the file on mismatch |
 | `--log-path` | `-l` | Custom path for the audit log |
+| `--allow-hardlinks` | | Also wipe files with several hard links (destroys the data of every name) |
+| `--allow-dangerous-target` | | Allow protected targets (root, home, system dirs, mount points) |
 
 ### Standards
 
@@ -111,10 +114,11 @@ Herramienta de destrucción segura de archivos. MadaraMaster sobrescribe archivo
 - **Detección automática de almacenamiento** — distingue HDD, SSD y NVMe en Linux, Windows y macOS y ajusta la estrategia en consecuencia.
 - **Motor async** con `aiofiles` y buffers adaptativos (50 MB en SSD/NVMe, 10 MB en HDD).
 - **Direct I/O** — evita la caché de páginas del SO (`O_DIRECT | O_SYNC` en Linux; `FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH` en Windows) para garantizar que los datos borrados no queden en RAM.
-- **Destrucción del slack space** — sobrescribe el espacio entre EOF y el límite del clúster con bytes aleatorios.
+- **Destrucción del slack space** — cada pase cubre el fichero redondeado al clúster, así que el espacio entre EOF y el límite del clúster también se sobrescribe.
 - **Destrucción de ADS** (solo Windows) — enumera y machaca cada Alternate Data Stream mediante `FindFirstStreamW` / `FindNextStreamW`.
 - **Limpieza de metadatos de inodo** — pone a cero todos los timestamps MAC y realiza 3–5 renombrados con nombres de longitud variable para machacar entradas de la MFT / journal ext4.
-- **Flag `--verify` opcional** — muestrea bloques aleatorios tras el borrado y comprueba la entropía Shannon; por debajo de 7.0 bits/byte marca la operación como fallida.
+- **Flag `--verify` opcional** — relee el fichero tras el último pase y lo compara con el SHA-256 de lo escrito; si no coincide, la operación falla y el fichero **no** se elimina.
+- **Salvaguardas** — los enlaces simbólicos y junctions nunca se siguen (solo se elimina el enlace), los ficheros no regulares se omiten, los ficheros con varios enlaces duros se rechazan salvo con `--allow-hardlinks`, y los objetivos protegidos (raíces de sistemas de archivos, tu HOME, directorios del sistema, puntos de montaje) se rechazan salvo con `--allow-dangerous-target`. Para borrar un directorio hay que escribir su nombre.
 - **Log de auditoría** — cada operación queda registrada en `madara_audit.jsonl` con SHA-256 pre-borrado, timestamps UTC, usuario, hostname y resultado.
 - **Sesión interactiva** — modo sin argumentos donde puedes arrastrar archivos a la terminal, hacer cola y borrarlos todos de golpe.
 
@@ -161,8 +165,10 @@ python madara.py wipe datos.pdf --log-path /var/log/madara_audit.jsonl
 | `--confirm` | `-y` | Saltar confirmación |
 | `--dry-run` | `-n` | Vista previa sin borrar |
 | `--standard` | `-s` | `clear`, `purge` o `dod` |
-| `--verify` | `-v` | Verificar entropía post-borrado |
+| `--verify` | `-v` | Releer y comparar tras el borrado; conserva el fichero si no coincide |
 | `--log-path` | `-l` | Ruta para el log de auditoría |
+| `--allow-hardlinks` | | Borrar también ficheros con varios enlaces duros (destruye los datos de todos sus nombres) |
+| `--allow-dangerous-target` | | Permitir objetivos protegidos (raíz, HOME, directorios del sistema, puntos de montaje) |
 
 ### Estándares
 
