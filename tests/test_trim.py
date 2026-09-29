@@ -4,10 +4,10 @@ import os
 from unittest import mock
 
 import pytest
-
-import trim
 from conftest import REAL_SEND_TRIM
-from storage import StorageType
+
+from madaramaster import trim
+from madaramaster.storage import StorageType
 
 
 def test_windows_trim_code_is_gone():

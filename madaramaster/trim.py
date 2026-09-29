@@ -48,7 +48,7 @@ def send_trim(path: Path) -> bool:
             return _trim_linux(path)
         # Windows and macOS: intentionally a no-op (see module header).
     except Exception as exc:
-        log.debug("TRIM: excepción ignorada en %s: %s", system, exc)
+        log.debug("TRIM: ignored exception on %s: %s", system, exc)
     return False
 
 
@@ -117,24 +117,24 @@ def _trim_linux(path: Path) -> bool:
     try:
         fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY)
     except OSError as exc:
-        log.debug("TRIM Linux: no se pudo abrir %s: %s", parent, exc)
+        log.debug("TRIM Linux: could not open %s: %s", parent, exc)
         return False
 
     try:
         buf = bytearray(_FSTRIM_RANGE)
         fcntl.ioctl(fd, _FITRIM, buf)
         trimmed = struct.unpack("QQQ", buf)[1]
-        log.debug("TRIM Linux: %.1f MB liberados en %s", trimmed / 1024 / 1024, parent)
+        log.debug("TRIM Linux: %.1f MB trimmed on %s", trimmed / 1024 / 1024, parent)
         return True
     except PermissionError:
         log.debug(
-            "TRIM Linux: FITRIM denegado en %s — se requiere CAP_SYS_ADMIN.  "
-            "Considera montar con 'discard' o ejecutar como root.",
+            "TRIM Linux: FITRIM denied on %s — CAP_SYS_ADMIN is required.  "
+            "Consider mounting with 'discard' or running as root.",
             parent,
         )
         return False
     except OSError as exc:
-        log.debug("TRIM Linux: FITRIM falló en %s: %s", parent, exc)
+        log.debug("TRIM Linux: FITRIM failed on %s: %s", parent, exc)
         return False
     finally:
         os.close(fd)

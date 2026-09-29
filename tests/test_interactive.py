@@ -9,8 +9,8 @@ from unittest import mock
 
 import pytest
 
-import madara
-from wiper import WipeSummary
+from madaramaster import cli as madara
+from madaramaster.models import WipeSummary
 
 
 @pytest.fixture(autouse=True)
@@ -75,7 +75,7 @@ def _run_session(monkeypatch, lines):
         try:
             return next(it)
         except StopIteration:
-            raise EOFError
+            raise EOFError from None
 
     monkeypatch.setattr("builtins.input", fake_input)
     madara.interactive_session()

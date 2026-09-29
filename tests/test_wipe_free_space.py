@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-import madara
+from madaramaster import cli as madara
 
 
 class _FakeFill:

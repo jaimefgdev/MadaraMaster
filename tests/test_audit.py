@@ -8,13 +8,13 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import REAL_DEFAULT_LOG_PATH
 from typer.testing import CliRunner
 
-import audit
-import madara
-import wiper_async
-from audit import AuditLogger, NullAuditLogger
-from conftest import REAL_DEFAULT_LOG_PATH
+from madaramaster import audit
+from madaramaster import cli as madara
+from madaramaster import engine as wiper_async
+from madaramaster.audit import AuditLogger, NullAuditLogger
 
 
 def _records(path):

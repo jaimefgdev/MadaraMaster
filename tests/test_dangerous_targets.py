@@ -11,9 +11,9 @@ from unittest import mock
 import pytest
 from typer.testing import CliRunner
 
-import madara
-from safety import find_danger
-from wiper import WipeSummary
+from madaramaster import cli as madara
+from madaramaster.models import WipeSummary
+from madaramaster.safety import find_danger
 
 
 def test_filesystem_root_is_refused():

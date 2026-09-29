@@ -7,8 +7,8 @@ import sys
 
 import pytest
 
-import wiper_async
-from storage import SanitizationStandard, StorageType
+from madaramaster import engine as wiper_async
+from madaramaster.storage import SanitizationStandard, StorageType
 
 _O_BINARY = getattr(os, "O_BINARY", 0)
 
@@ -44,7 +44,8 @@ def test_direct_writes_use_aligned_memory_length_and_offset(tmp_path, monkeypatc
 
     def spy_write(fd_, buf):
         if isinstance(buf, memoryview):
-            seen.append((_address(buf) % 4096, len(buf) % 4096, os.lseek(fd_, 0, os.SEEK_CUR) % 4096))
+            offset = os.lseek(fd_, 0, os.SEEK_CUR)
+            seen.append((_address(buf) % 4096, len(buf) % 4096, offset % 4096))
         return real_write(fd_, buf)
 
     monkeypatch.setattr(os, "write", spy_write)
