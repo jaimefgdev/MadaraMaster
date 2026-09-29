@@ -33,7 +33,7 @@ from unittest import mock
 import aiofiles.threadpool
 import pytest
 
-from madaramaster import audit, storage, trim
+from madaramaster import audit, residue, storage, trim
 from madaramaster import cli as madara
 from madaramaster import engine as wiper_async
 from madaramaster.storage import StorageType
@@ -139,6 +139,11 @@ def safety_net(
     fake_storage = mock.Mock(name="detect_storage_type", return_value=StorageType.HDD)
     for mod in (storage, wiper_async):
         monkeypatch.setattr(mod, "detect_storage_type", fake_storage)
+
+    # Residue detection reads mount tables / volume info: keep it silent by
+    # default so output stays deterministic; tests that need it patch it.
+    fake_residue = mock.Mock(name="detect_residue_risks", return_value=[])
+    monkeypatch.setattr(residue, "detect_residue_risks", fake_residue)
 
     # storage.py talks to volume handles through its own kernel32 instance,
     # which the CreateFileW guard below cannot see: block it outright.
@@ -258,6 +263,11 @@ def fake_trim() -> mock.Mock:
 @pytest.fixture
 def fake_storage() -> mock.Mock:
     return wiper_async.detect_storage_type
+
+
+@pytest.fixture
+def fake_residue() -> mock.Mock:
+    return residue.detect_residue_risks
 
 
 @pytest.fixture

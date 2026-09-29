@@ -36,7 +36,7 @@ from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
-from . import __version__, storage
+from . import __version__, residue, storage
 from .audit import AuditLogger, NullAuditLogger, default_log_path
 from .engine import AsyncWiper
 from .models import WipeResult, WipeSummary, WipeTelemetry
@@ -183,6 +183,22 @@ LANG: dict[str, dict[str, str]] = {
             "For that, use full-disk encryption or the drive's own secure erase."
         ),
         "purge_forces_verify": "The purge standard always verifies after wiping.",
+        "residue_title": "Copies may survive this wipe",
+        "residue_cow_fs": (
+            "Copy-on-write filesystem (btrfs, ZFS, APFS, ReFS…): overwrites go to new\n"
+            "blocks, so the old data can stay on disk."
+        ),
+        "residue_network": (
+            "Network location: the server may keep its own snapshots, caches or backups."
+        ),
+        "residue_cloud_sync": (
+            "Cloud-synced folder (OneDrive, Dropbox, Google Drive, iCloud…): the cloud\n"
+            "copy and its version history are not wiped. Delete them there too."
+        ),
+        "residue_data_journal": (
+            "ext3/ext4 mounted with data=journal: file contents may remain in the journal."
+        ),
+        "residue_hint": "See the README's Limitations section for details.",
         "trims_sent": "TRIM sent",
         "lbl_hash": "Hash before wipe",
         "yes": "Yes",
@@ -309,6 +325,23 @@ LANG: dict[str, dict[str, str]] = {
             "Para eso, usa cifrado de disco completo o el borrado seguro de la unidad."
         ),
         "purge_forces_verify": "El estándar purge siempre verifica tras el borrado.",
+        "residue_title": "Pueden quedar copias tras este borrado",
+        "residue_cow_fs": (
+            "Sistema de archivos copy-on-write (btrfs, ZFS, APFS, ReFS…): lo que se\n"
+            "sobrescribe va a bloques nuevos y los datos antiguos pueden seguir en disco."
+        ),
+        "residue_network": (
+            "Ubicación de red: el servidor puede guardar sus propias instantáneas,\n"
+            "cachés o copias de seguridad."
+        ),
+        "residue_cloud_sync": (
+            "Carpeta sincronizada con la nube (OneDrive, Dropbox, Google Drive, iCloud…):\n"
+            "la copia de la nube y su historial de versiones no se borran. Bórralos allí."
+        ),
+        "residue_data_journal": (
+            "ext3/ext4 montado con data=journal: el contenido puede quedar en el journal."
+        ),
+        "residue_hint": "Consulta la sección Limitaciones del README para más detalles.",
         "trims_sent": "TRIM enviado",
         "lbl_hash": "Hash previo",
         "yes": "Sí",
@@ -693,6 +726,27 @@ def _expand_targets(
     return list(files), dirs, errors
 
 
+def _print_residue_warning(targets: list[str]) -> None:
+    """Warn when copies of the targets may survive a file-level wipe.
+
+    Args:
+        targets: Paths (files or directories) about to be wiped.
+    """
+    found: list[residue.Residue] = []
+    for target in targets:
+        for risk in residue.detect_residue_risks(Path(target)):
+            if risk not in found:
+                found.append(risk)
+    if not found:
+        return
+    lines = [f"[bold yellow]{T('residue_title')}[/]", ""]
+    # Let Rich wrap each reason to the terminal width.
+    lines += [f"• {T('residue_' + risk.value).replace(chr(10), ' ')}" for risk in found]
+    lines += ["", f"[dim]{T('residue_hint')}[/]"]
+    console.print()
+    console.print(Panel("\n".join(lines), border_style="yellow", box=box.ROUNDED, padding=(1, 2)))
+
+
 def _remove_empty_dirs(dirs: list[str]) -> None:
     """Remove each directory tree bottom-up, skipping anything not empty."""
     for target in dirs:
@@ -945,6 +999,8 @@ def wipe(
                     T("ssd_purge_warning"), border_style="yellow", box=box.ROUNDED, padding=(1, 2)
                 )
             )
+
+    _print_residue_warning([target])
 
     if dry_run:
         console.print(f"\n  [bold yellow]{T('dry_run_title')}[/]\n")
@@ -1432,6 +1488,7 @@ def interactive_session() -> None:
             continue
 
         _print_file_preview(queued_targets)
+        _print_residue_warning(queued_targets)
 
         if not _confirm_interactive(has_dirs=bool(dirs)):
             console.print(f"  [bold cyan]{T('op_cancelled')}[/]\n")
