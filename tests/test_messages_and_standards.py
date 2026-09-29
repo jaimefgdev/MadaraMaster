@@ -6,9 +6,9 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-import madara
-from storage import SanitizationStandard, StorageType
-from wiper import WipeTelemetry
+from madaramaster import cli as madara
+from madaramaster.models import WipeTelemetry
+from madaramaster.storage import SanitizationStandard, StorageType
 
 
 @pytest.fixture(autouse=True)

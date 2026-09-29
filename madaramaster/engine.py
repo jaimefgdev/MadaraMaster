@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# Motor asíncrono de borrado — v6.0
+# Motor asíncrono de borrado
 # jaimefg1888
 #
-# Mitigaciones forenses de bajo nivel añadidas en v6:
+# Mitigaciones forenses de bajo nivel:
 #   1. Destrucción de metadatos de inodo (MFT / ext4 Journal)
 #      — MAC times → epoch 0 + renombrado múltiple con UUIDs de longitud
 #        variable para machacar registros de nombre en la MFT/Journal.
@@ -38,15 +38,14 @@ import stat
 import string
 import sys
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Optional
 
 import aiofiles
 
-from audit import AuditLogger
-from safety import is_link_like
-from storage import SanitizationStandard, StorageType, detect_storage_type
+from .audit import AuditLogger
+from .safety import is_link_like
+from .storage import SanitizationStandard, StorageType, detect_storage_type
 
 # ─── Alignment constants ─────────────────────────────────────────────────────
 _SECTOR_SIZE = 4096  # Required alignment for O_DIRECT / NO_BUFFERING
@@ -189,7 +188,7 @@ def _write_all(fd: int, buf: bytes | memoryview) -> None:
     while len(view):
         n = os.write(fd, view)
         if n <= 0:
-            raise OSError(errno.EIO, "write() devolvió 0 bytes")
+            raise OSError(errno.EIO, "write() returned 0 bytes")
         view = view[n:]
 
 
@@ -207,7 +206,7 @@ def _check_identity(fd: int, expected: os.stat_result) -> None:
         expected.st_dev,
         expected.st_ino,
     ):
-        raise OSError(errno.ESTALE, "El fichero cambió entre la comprobación y la apertura")
+        raise OSError(errno.ESTALE, "the file changed between the checks and the open")
 
 
 class _DirectIOContext:
@@ -697,25 +696,25 @@ class AsyncWiper:
             try:
                 st = path.lstat()
             except FileNotFoundError:
-                raise FileNotFoundError(f"No se encuentra el archivo: {path}") from None
+                raise FileNotFoundError(f"File not found: {path}") from None
 
             # ── 1. Safety checks ──────────────────────────────────────────
             if is_link_like(st):
                 # Never follow a link: overwriting it would destroy its target.
                 await asyncio.to_thread(os.unlink, path)
-                result["strategy"] = "Enlace (eliminado sin seguirlo)"
+                result["strategy"] = "Link (removed without following it)"
                 result["success"] = True
                 self._audit(path, 0, sha256_before, standard, result)
                 return result
 
             if not stat.S_ISREG(st.st_mode):
-                raise ValueError(f"No es un fichero regular, se omite: {path}")
+                raise ValueError(f"Not a regular file, skipped: {path}")
 
             if st.st_nlink > 1 and not allow_hardlinks:
                 raise ValueError(
-                    f"El fichero tiene {st.st_nlink} enlaces duros; sobrescribirlo "
-                    "destruiría también los datos de los otros nombres. "
-                    "Usa --allow-hardlinks para forzarlo."
+                    f"The file has {st.st_nlink} hard links; overwriting it would also "
+                    "destroy the data seen through the other names. "
+                    "Use --allow-hardlinks to force it."
                 )
 
             file_size_for_audit = st.st_size
@@ -791,8 +790,8 @@ class AsyncWiper:
                 result["verified"] = verified
                 if not verified:
                     raise _VerificationFailed(
-                        "Verificación fallida: el contenido leído no coincide con el "
-                        f"último pase. El fichero NO se ha eliminado: {path}"
+                        "Verification failed: the data read back does not match the "
+                        f"last pass. The file was NOT deleted: {path}"
                     )
             else:
                 result["verified"] = None
@@ -805,7 +804,7 @@ class AsyncWiper:
             except OSError as exc:
                 result["final_path"] = str(current_path)
                 raise OSError(
-                    f"Sobrescrito pero NO eliminado; el fichero sigue en {current_path}: {exc}"
+                    f"Overwritten but NOT deleted; the file is still at {current_path}: {exc}"
                 ) from exc
 
             result["success"] = True

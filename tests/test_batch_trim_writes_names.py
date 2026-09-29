@@ -1,49 +1,21 @@
-"""Points 14, 15 and 16 — complete writes (sync engine), one TRIM per batch,
+"""Points 14, 15 and 16 — complete writes, one TRIM per batch,
 CSPRNG names without a telltale suffix."""
 
 import errno
 import os
 import random
 import sys
-from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
-import madara
-import wiper as sync_wiper
-import wiper_async
-from storage import StorageType
+from madaramaster import cli as madara
+from madaramaster import engine as wiper_async
+from madaramaster.storage import StorageType
+
+# ── Point 14: a zero-byte write is an error ──────────────────────────────────
 
 
-# ── Point 14: sync engine writes everything ──────────────────────────────────
-
-
-def test_sync_engine_completes_short_writes(tmp_path, monkeypatch):
-    f = tmp_path / "f.bin"
-    f.write_bytes(os.urandom(10_000))
-    real_write = os.write
-    really_written = []
-
-    def short_write(fd, buf):
-        n = real_write(fd, bytes(buf[:1000]))
-        really_written.append(n)
-        return n
-
-    monkeypatch.setattr(os, "write", short_write)
-    res = sync_wiper.wipe_file(str(f))
-    assert res.success, res.error
-    assert sum(really_written) == 3 * 10_000, "short writes left part of the file untouched"
-    assert not f.exists()
-
-
-def test_sync_engine_zero_write_is_an_error(tmp_path, monkeypatch):
-    f = tmp_path / "f.bin"
-    f.write_bytes(os.urandom(10_000))
-    monkeypatch.setattr(os, "write", lambda fd, buf: 0)
-    res = sync_wiper.wipe_file(str(f))
-    assert not res.success
-    assert f.exists()
 
 
 def test_async_write_all_zero_is_an_error(monkeypatch):
@@ -131,14 +103,6 @@ def test_async_renames_keep_length_and_have_no_suffix(tmp_path, no_random_module
     assert not final.name.endswith(".tmp")
     assert final.name.isalnum()
 
-
-def test_sync_rename_keeps_length_and_has_no_suffix(tmp_path, no_random_module):
-    f = tmp_path / "quarterly_report_final.pdf"
-    f.write_bytes(b"x")
-    final = Path(sync_wiper._scrub_metadata(str(f)))
-    assert final != f and final.exists()
-    assert len(final.name) == len(f.name)
-    assert not final.name.endswith(".tmp")
 
 
 def test_random_names_are_unpredictable():

@@ -131,13 +131,58 @@ def find_danger(
 
     for cand in candidates:
         if os.path.dirname(cand) == cand:
-            return f"{cand} es la raíz de un sistema de archivos"
+            return f"{cand} is a filesystem root"
         if os.path.isdir(cand) and os.path.ismount(cand):
-            return f"{cand} es un punto de montaje"
+            return f"{cand} is a mount point"
         for p in protected_n:
             if _is_within(p, cand):
-                return f"{cand} es o contiene una ubicación protegida ({p})"
+                return f"{cand} is or contains a protected location ({p})"
         for t in trees_n:
             if _is_within(cand, t):
-                return f"{cand} está dentro de un directorio del sistema ({t})"
+                return f"{cand} is inside a system directory ({t})"
     return None
+
+
+def collect_files(target: str) -> list[str]:
+    """Return a flat list of every entry to wipe under *target*.
+
+    Links (symlinks and Windows junctions) are **never followed**: a link
+    is returned as an entry of its own so the engine unlinks it without
+    touching its target.  A link given as *target* is returned alone.
+    Non-regular files (FIFOs, sockets, device nodes) are returned too so
+    the engine can report and skip them.
+
+    Args:
+        target: A path to a single file or a directory root.
+
+    Returns:
+        A list of absolute paths, children before parents.  Empty if
+        *target* does not exist.
+    """
+    target = os.path.abspath(target)
+    try:
+        st = os.lstat(target)
+    except OSError:
+        return []
+    if is_link_like(st) or not stat.S_ISDIR(st.st_mode):
+        return [target]
+
+    found: list[str] = []
+
+    def _walk(directory: str) -> None:
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                est = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if not is_link_like(est) and stat.S_ISDIR(est.st_mode):
+                _walk(entry.path)
+            else:
+                found.append(entry.path)
+
+    _walk(target)
+    return found
