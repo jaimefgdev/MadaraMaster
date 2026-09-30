@@ -183,7 +183,9 @@ def wipe(
         ui.console.print()
         if is_dir:
             expected = os.path.basename(target)
-            typed = typer.prompt(T("confirm_type_name", name=expected), default="")
+            typed = typer.prompt(
+                T("confirm_type_name", name=expected), default="", show_default=False
+            )
             confirmed = typed.strip() == expected
         else:
             confirmed = typer.confirm(T("confirm_prompt"), default=False)

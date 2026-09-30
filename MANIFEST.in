@@ -3,6 +3,8 @@
 # no device access, no writes outside tmp): the tests must never run without it.
 graft tests
 graft scripts
+# docs/demo.cast and docs/demo.gif are checked by tests/test_demo.py.
+graft docs
 include RELEASING.md
 include madara.py MadaraMaster.spec madara.manifest build.ps1 .gitignore
 global-exclude __pycache__ *.py[cod]
