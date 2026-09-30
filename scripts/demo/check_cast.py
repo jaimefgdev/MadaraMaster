@@ -8,7 +8,9 @@ The asciicast is replayed in `pyte` and the screen is inspected after
 * while the live dashboard is on screen it is complete (top and bottom
   border) and nothing is printed below it;
 * the summary table and the final banner are never on screen twice;
-* no replacement characters (U+FFFD) from split UTF-8 sequences.
+* no replacement characters (U+FFFD) from split UTF-8 sequences;
+* the dashboard's global progress never goes back and never claims
+  100 % with nothing to write ("0 B / 0 B").
 
 Usage::
 
@@ -21,12 +23,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 import pyte
 
 CONFIRM = "Type the directory name"
 DASH_HEADER = "MADARA MASTER v"
+PROGRESS = re.compile(r"Global Progress.*?(\d+(?:\.\d)?)%")
 ONCE = (CONFIRM, "WIPE SUMMARY", "FILES OVERWRITTEN AND DELETED", DASH_HEADER)
 
 
@@ -71,11 +75,22 @@ def check(path: Path) -> list[str]:
     screen = pyte.Screen(header["width"], header["height"])
     stream = pyte.Stream(screen)
     problems = []
+    last_progress = None
     for i, (t, kind, data) in enumerate(events):
         if kind != "o":
             continue
         stream.feed(data)
-        for p in screen_problems([row.rstrip() for row in screen.display]):
+        rows = [row.rstrip() for row in screen.display]
+        found = screen_problems(rows)
+        match = next((m for m in map(PROGRESS.search, rows) if m), None)
+        if match:
+            progress = float(match.group(1))
+            if last_progress is not None and progress < last_progress:
+                found.append(f"global progress went back from {last_progress}% to {progress}%")
+            last_progress = progress
+        if any("0 B / 0 B" in row for row in rows):
+            found.append("dashboard shows '0 B / 0 B'")
+        for p in found:
             problems.append(f"event {i} (t={t:.2f}s): {p}")
     return problems
 

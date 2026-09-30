@@ -45,14 +45,46 @@ class WipeTelemetry:
     finished: bool = False
     pass_patterns: list[str] = field(default_factory=list)
     algorithm: str = ""
+    # Whole batch, planned before the first file is touched, so the global
+    # progress runs from 0 % to 100 % once instead of restarting per file.
+    batch_files: int = 0
+    batch_files_done: int = 0
+    batch_total_bytes: int = 0  # sum of file size × passes over the batch
+    batch_done_bytes: int = 0  # planned bytes of the files already processed
+    batch_written_bytes: int = 0  # bytes actually overwritten in those files
 
     @property
     def total_target_bytes(self) -> int:
+        """Bytes the current file needs: its size times its passes."""
         return self.file_size * self.total_passes
 
     @property
+    def current_file_bytes(self) -> int:
+        """Progress of the current file, never more than its target."""
+        return max(0, min(self.bytes_written_total, self.total_target_bytes))
+
+    @property
+    def written_bytes(self) -> int:
+        """Bytes written so far: across the batch when there is one."""
+        if self.batch_files:
+            return self.batch_written_bytes + self.current_file_bytes
+        return self.bytes_written_total
+
+    @property
+    def target_bytes(self) -> int:
+        """Bytes to write in total: across the batch when there is one."""
+        return self.batch_total_bytes if self.batch_files else self.total_target_bytes
+
+    @property
     def global_progress(self) -> float:
+        """Fraction of the work done, from 0.0 to 1.0 (never goes back)."""
+        if self.batch_files:
+            if self.batch_total_bytes > 0:
+                done = self.batch_done_bytes + self.current_file_bytes
+                return min(done / self.batch_total_bytes, 1.0)
+            # Only empty files: count files instead of bytes.
+            return min(self.batch_files_done / self.batch_files, 1.0)
         target = self.total_target_bytes
         if target <= 0:
-            return 1.0
+            return 1.0 if self.finished else 0.0
         return min(self.bytes_written_total / target, 1.0)

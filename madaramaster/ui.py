@@ -267,7 +267,6 @@ def _build_dashboard(
 
     progress_pct = telemetry.global_progress * 100
     speed = speed_tracker.get_speed()
-    total_target = telemetry.total_target_bytes
 
     bar = ProgressBar(
         total=100,
@@ -294,7 +293,7 @@ def _build_dashboard(
     metrics_table.add_row(
         T("dash_written"),
         Text(
-            f"{format_bytes(telemetry.bytes_written_total)} / {format_bytes(total_target)}",
+            f"{format_bytes(telemetry.written_bytes)} / {format_bytes(telemetry.target_bytes)}",
             style="bold bright_magenta",
         ),
     )
