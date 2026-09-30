@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Salvaguardas de MadaraMaster: enlaces y objetivos peligrosos
-# jaimefg1888
+# jaimefgdev
 
 from __future__ import annotations
 

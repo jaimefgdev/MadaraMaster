@@ -8,7 +8,7 @@
   -->
   <assemblyIdentity
     type="win32"
-    name="jaimefg1888.MadaraMaster"
+    name="jaimefgdev.MadaraMaster"
     version="{version}"
     processorArchitecture="amd64"
   />
