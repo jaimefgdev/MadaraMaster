@@ -111,3 +111,72 @@ def test_render_gif_on_a_synthetic_cast(tmp_path):
     # The 8.5 s pause is capped by idle_limit, the last frame held end_hold.
     assert sum(durations) <= 3000
     assert durations[-1] == 1000
+
+
+def load_checker():
+    pytest.importorskip("pyte")
+    spec = importlib.util.spec_from_file_location("check_cast", DEMO / "check_cast.py")
+    check_cast = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(check_cast)
+    return check_cast
+
+
+def test_checked_in_recording_has_no_repaint_leftovers():
+    # Every screen of the recording (a superset of the GIF frames) is clean.
+    assert load_checker().check(DOCS / "demo.cast") == []
+
+
+def _write_cast(path, *chunks, width=40, height=10):
+    lines = [json.dumps({"version": 2, "width": width, "height": height})]
+    lines += [json.dumps([i * 0.1, "o", c]) for i, c in enumerate(chunks)]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+DASH = "┏" + "━" * 20 + "┓\r\n┃ MADARA MASTER v5 ┃\r\n┗" + "━" * 20 + "┛"
+
+
+def test_checker_accepts_a_clean_dashboard(tmp_path):
+    cast = _write_cast(tmp_path / "ok.cast", "Type the directory name: x\r\n", DASH)
+    assert load_checker().check(cast) == []
+
+
+def test_checker_flags_a_duplicated_prompt(tmp_path):
+    cast = _write_cast(
+        tmp_path / "dup.cast", "Type the directory name: x\r\n", DASH,
+        "\r\nType the directory name: x",
+    )
+    problems = load_checker().check(cast)
+    assert any("on screen 2 times" in p for p in problems)
+    assert any("text below the dashboard" in p for p in problems)
+
+
+def test_checker_flags_a_half_drawn_repaint(tmp_path):
+    torn = "┏" + "━" * 20 + "┓\r\n┃ MADARA MASTER v5 ┃\r\n┗" + "━" * 8
+    cast = _write_cast(tmp_path / "torn.cast", torn)
+    problems = load_checker().check(cast)
+    assert any("drawn only in part" in p for p in problems)
+
+
+# Majors that run on Node.js 24; the previous ones run on the deprecated Node.js 20.
+MIN_ACTION_MAJOR = {
+    "actions/checkout": 5,
+    "actions/setup-python": 6,
+    "actions/upload-artifact": 6,
+    "actions/download-artifact": 7,
+}
+
+
+def test_workflows_use_node24_actions():
+    import re
+
+    workflows = ROOT / ".github" / "workflows"
+    if not workflows.is_dir():
+        pytest.skip("no .github/workflows (e.g. running from the sdist)")
+    found = set()
+    for wf in workflows.glob("*.yml"):
+        for action, major in re.findall(r"uses:\s*([\w.-]+/[\w.-]+)@v(\d+)", wf.read_text()):
+            if action in MIN_ACTION_MAJOR:
+                found.add(action)
+                assert int(major) >= MIN_ACTION_MAJOR[action], f"{wf.name}: {action}@v{major}"
+    assert found == set(MIN_ACTION_MAJOR)
