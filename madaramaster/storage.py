@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Detección de tipo de almacenamiento — sin subprocess, sin dependencias extras
-# jaimefg1888
+# jaimefgdev
 #
 # Linux  → sysfs kernel interface (/sys/class/block, /sys/block)
 #           st_dev  (major:minor) mapea a un nodo en /sys/class/block/{dev}/dev
