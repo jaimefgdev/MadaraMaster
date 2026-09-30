@@ -18,6 +18,10 @@ from .storage import SanitizationStandard
 from .trim import send_trim
 from .ui import SpeedTracker, _build_dashboard
 
+# How long the dashboard stays on screen at 100 % before the summary replaces
+# it; without a pause the last repaint is erased as soon as it is drawn.
+FINAL_HOLD_SECONDS = 0.6
+
 # ─── Async wipe orchestration ─────────────────────────────────────────────────
 
 _FLASH_TYPES = ("ssd", "nvme")
@@ -216,10 +220,21 @@ async def async_wipe_logic(
                 summary.files_failed += 1
                 summary.errors.append(f"{filepath}: {w_res.error}")
 
+        held = 0.0
+        if files:
+            telemetry.batch_complete = True
+            live.update(
+                _build_dashboard(telemetry, speed_tracker, len(files), len(files)), refresh=True
+            )
+            hold_start = time.time()
+            await asyncio.sleep(FINAL_HOLD_SECONDS)
+            held = time.time() - hold_start
+
     # One TRIM per filesystem for the whole batch, not one per file.
     for directory in trim_targets.values():
         if await asyncio.to_thread(send_trim, directory):
             summary.trims_sent += 1
 
-    summary.total_duration = time.time() - start_time
+    # The pause on the final frame is not part of the wipe.
+    summary.total_duration = time.time() - start_time - held
     return summary

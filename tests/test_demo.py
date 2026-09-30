@@ -180,3 +180,73 @@ def test_workflows_use_node24_actions():
                 found.add(action)
                 assert int(major) >= MIN_ACTION_MAJOR[action], f"{wf.name}: {action}@v{major}"
     assert found == set(MIN_ACTION_MAJOR)
+
+
+# Like Rich at the end of a transient Live: erase the dashboard, print the summary.
+CLEAR_AND_SUMMARY = "\r\x1b[2KWIPE SUMMARY"
+
+
+def _progress_cast(path, steps):
+    """A cast whose dashboard line shows each (time, percent) in *steps*."""
+    lines = [json.dumps({"version": 2, "width": 60, "height": 5})]
+    for t, pct in steps:
+        lines.append(json.dumps([t, "o", f"\r\x1b[2KGlobal Progress  {pct:.1f}%"]))
+    lines.append(json.dumps([steps[-1][0] + 1.0, "o", CLEAR_AND_SUMMARY]))
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def test_checker_wants_100_percent_held_on_screen(tmp_path):
+    check = load_checker().check
+    assert check(_progress_cast(tmp_path / "ok.cast", [(0, 0), (0.1, 60), (0.2, 100)])) == []
+    never = check(_progress_cast(tmp_path / "never.cast", [(0, 0), (0.1, 95)]))
+    assert any("never shows 100 %" in p for p in never)
+    brief = _progress_cast(tmp_path / "brief.cast", [(0, 0), (0.1, 100)])
+    text = brief.read_text().splitlines()
+    text[-1] = json.dumps([0.15, "o", CLEAR_AND_SUMMARY])  # replaced after 50 ms
+    brief.write_text("\n".join(text), encoding="utf-8")
+    assert any("100 % shown for" in p for p in check(brief))
+
+
+def test_checker_flags_progress_going_back(tmp_path):
+    problems = load_checker().check(
+        _progress_cast(tmp_path / "back.cast", [(0, 0), (0.1, 84), (0.2, 18.5), (0.3, 100)])
+    )
+    assert any("went back from 84.0% to 18.5%" in p for p in problems)
+
+
+def test_render_gif_keeps_the_state_before_a_pause_for_its_real_duration(tmp_path):
+    """The screen after a burst stays in the GIF as long as it stayed on screen.
+
+    The renderer used to snapshot *before* each event, so a final state
+    (e.g. the dashboard at 100 %) lasted until the next event after the pause.
+    """
+    pytest.importorskip("pyte")
+    pytest.importorskip("PIL")
+    spec = importlib.util.spec_from_file_location("render_gif", DEMO / "render_gif.py")
+    render_gif = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(render_gif)
+    try:
+        render_gif.find_font("DejaVuSansMono.ttf")
+        render_gif.find_font("DejaVuSansMono-Bold.ttf")
+    except SystemExit:
+        pytest.skip("DejaVu fonts not installed")
+
+    events = [[0.0, "o", "a"], [0.01, "o", "b"], [0.02, "o", "c"], [0.62, "o", "d"]]
+    cast = tmp_path / "burst.cast"
+    cast.write_text(
+        "\n".join(json.dumps(x) for x in [{"version": 2, "width": 10, "height": 2}, *events]),
+        encoding="utf-8",
+    )
+    out = tmp_path / "burst.gif"
+    render_gif.render(cast, out, font_size=15, fps=12, idle_limit=2.5, end_hold=1.0)
+
+    from PIL import Image
+
+    with Image.open(out) as im:
+        durations = []
+        for i in range(im.n_frames):
+            im.seek(i)
+            durations.append(im.info["duration"])
+    assert 600 in durations  # "abc" from 0.02 s to 0.62 s
+    assert durations[-1] == 1000
