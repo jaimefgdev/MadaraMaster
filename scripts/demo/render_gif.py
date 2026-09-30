@@ -168,22 +168,10 @@ def render(
     stream = pyte.Stream(screen)
     renderer = Renderer(cols, rows, font_size, padding=12)
 
-    frames: list[Image.Image] = []
-    durations: list[int] = []
-    step = 1.0 / fps
+    # Output events on the GIF's clock: pauses longer than idle_limit are cut.
+    timeline: list[tuple[float, str]] = []
     last_t = 0.0
     shift = 0.0  # idle time removed so far
-
-    def snapshot(at: float) -> None:
-        img = renderer.frame(screen, cursor=True)
-        if frames and img.tobytes() == frames[-1].tobytes():
-            return
-        if frames:
-            durations.append(max(20, round((at - last_snap[0]) * 1000)))
-        frames.append(img)
-        last_snap[0] = at
-
-    last_snap = [0.0]
     for t, kind, data in events:
         if kind != "o":
             continue
@@ -191,11 +179,29 @@ def render(
         if gap > idle_limit:
             shift += gap - idle_limit
         last_t = t
-        at = t - shift
-        if at - last_snap[0] >= step or not frames:
-            snapshot(at)
+        timeline.append((t - shift, data))
+
+    # A frame is the screen *after* an event, shown from that event until the
+    # next frame.  The state after event i is captured when it stays on screen
+    # long enough to matter (the next event is at least one frame period after
+    # the last capture) and always for the last event, so the final state of a
+    # burst (e.g. a dashboard at 100 % before a pause) is never skipped.
+    frames: list[Image.Image] = []
+    starts: list[float] = []
+    step = 1.0 / fps
+    for i, (at, data) in enumerate(timeline):
         stream.feed(data)
-    snapshot(last_t - shift)
+        next_at = timeline[i + 1][0] if i + 1 < len(timeline) else None
+        if frames and next_at is not None and next_at - starts[-1] < step:
+            continue
+        img = renderer.frame(screen, cursor=True)
+        if frames and img.tobytes() == frames[-1].tobytes():
+            continue
+        starts.append(at if starts else 0.0)
+        frames.append(img)
+    durations = [
+        max(20, round((b - a) * 1000)) for a, b in zip(starts, starts[1:], strict=False)
+    ]
     durations.append(round(end_hold * 1000))
 
     palette_frames = [

@@ -18,6 +18,10 @@ from .storage import SanitizationStandard
 from .trim import send_trim
 from .ui import SpeedTracker, _build_dashboard
 
+# How long the dashboard stays on screen at 100 % before the summary replaces
+# it; without a pause the last repaint is erased as soon as it is drawn.
+FINAL_HOLD_SECONDS = 0.6
+
 # ─── Async wipe orchestration ─────────────────────────────────────────────────
 
 _FLASH_TYPES = ("ssd", "nvme")
@@ -116,7 +120,24 @@ async def async_wipe_logic(
     start_time = time.time()
     trim_targets: dict[int, Path] = {}
 
-    telemetry = WipeTelemetry()
+    # Plan the whole batch first (storage detection is cached per device), so
+    # the dashboard knows the total from its first frame.
+    plans: list[tuple[int, list[str]]] = []
+    for filepath in files:
+        try:
+            file_size = Path(filepath).lstat().st_size
+        except OSError:
+            file_size = 0
+        try:
+            patterns = wiper.plan(Path(filepath), standard)
+        except Exception:
+            patterns = []
+        plans.append((file_size, patterns))
+
+    telemetry = WipeTelemetry(
+        batch_files=len(files),
+        batch_total_bytes=sum(size * max(1, len(p)) for size, p in plans),
+    )
     speed_tracker = SpeedTracker(window_seconds=2.0)
 
     with Live(
@@ -125,16 +146,10 @@ async def async_wipe_logic(
         refresh_per_second=12,
         transient=True,
     ) as live:
-        for file_idx, filepath in enumerate(files, start=1):
+        for file_idx, (filepath, (file_size, patterns)) in enumerate(
+            zip(files, plans, strict=True), start=1
+        ):
             file_path_obj = Path(filepath)
-            try:
-                file_size = file_path_obj.lstat().st_size
-            except OSError:
-                file_size = 0
-            try:
-                patterns = wiper.plan(file_path_obj, standard)
-            except Exception:
-                patterns = []
 
             telemetry.start_time = time.time()
             telemetry.current_pass = 0
@@ -157,12 +172,15 @@ async def async_wipe_logic(
                 total: int,
                 speed_tracker: SpeedTracker = speed_tracker,
                 file_idx: int = file_idx,
+                file_size: int = file_size,
             ) -> None:
                 telemetry.current_pass = pass_num
                 telemetry.bytes_written_current_pass = bytes_in_pass
-                current_total = (pass_num - 1) * total + bytes_in_pass
-                telemetry.bytes_written_total = current_total
-                speed_tracker.record(current_total)
+                speed_tracker.record((pass_num - 1) * total + bytes_in_pass)
+                # A pass covers the file rounded up to whole clusters (*total*),
+                # so progress is measured as a fraction of each pass.
+                fraction = bytes_in_pass / total if total > 0 else 1.0
+                telemetry.bytes_written_total = int(file_size * (pass_num - 1 + fraction))
                 live.update(_build_dashboard(telemetry, speed_tracker, file_idx, len(files)))
 
             result_dict = await wiper.wipe_file(
@@ -181,11 +199,16 @@ async def async_wipe_logic(
             )
             summary.results.append(w_res)
 
+            # The file is done (wiped or failed): move it into the batch totals.
+            telemetry.batch_files_done += 1
+            telemetry.batch_done_bytes += file_size * telemetry.total_passes
+            telemetry.batch_written_bytes += w_res.bytes_written
+            telemetry.bytes_written_total = 0
+
             if w_res.success:
                 summary.files_wiped += 1
                 summary.total_bytes_overwritten += w_res.bytes_written
                 telemetry.finished = True
-                telemetry.bytes_written_total = w_res.bytes_written
                 live.update(_build_dashboard(telemetry, speed_tracker, file_idx, len(files)))
                 if trim and result_dict.get("storage_type") in _FLASH_TYPES:
                     parent = file_path_obj.parent
@@ -197,10 +220,21 @@ async def async_wipe_logic(
                 summary.files_failed += 1
                 summary.errors.append(f"{filepath}: {w_res.error}")
 
+        held = 0.0
+        if files:
+            telemetry.batch_complete = True
+            live.update(
+                _build_dashboard(telemetry, speed_tracker, len(files), len(files)), refresh=True
+            )
+            hold_start = time.time()
+            await asyncio.sleep(FINAL_HOLD_SECONDS)
+            held = time.time() - hold_start
+
     # One TRIM per filesystem for the whole batch, not one per file.
     for directory in trim_targets.values():
         if await asyncio.to_thread(send_trim, directory):
             summary.trims_sent += 1
 
-    summary.total_duration = time.time() - start_time
+    # The pause on the final frame is not part of the wipe.
+    summary.total_duration = time.time() - start_time - held
     return summary

@@ -244,7 +244,9 @@ def _build_dashboard(
     basename = os.path.basename(telemetry.current_file) if telemetry.current_file else "—"
     display_name = basename[:45] + "…" if len(basename) > 45 else basename
 
-    if telemetry.finished:
+    if telemetry.batch_complete:
+        status_text = T("dash_done")
+    elif telemetry.finished:
         status_text = T("dash_scrubbing")
     elif telemetry.current_pass > 0:
         idx = telemetry.current_pass
@@ -267,7 +269,6 @@ def _build_dashboard(
 
     progress_pct = telemetry.global_progress * 100
     speed = speed_tracker.get_speed()
-    total_target = telemetry.total_target_bytes
 
     bar = ProgressBar(
         total=100,
@@ -294,7 +295,7 @@ def _build_dashboard(
     metrics_table.add_row(
         T("dash_written"),
         Text(
-            f"{format_bytes(telemetry.bytes_written_total)} / {format_bytes(total_target)}",
+            f"{format_bytes(telemetry.written_bytes)} / {format_bytes(telemetry.target_bytes)}",
             style="bold bright_magenta",
         ),
     )
