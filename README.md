@@ -147,8 +147,15 @@ To build `MadaraMaster.exe` on Windows: `.\build.ps1`, or `pip install ".[build]
 ```
 MadaraMaster/
 ├── madaramaster/
-│   ├── cli.py         # command line, interactive session, dashboard, i18n
+│   ├── cli.py         # entry point (madara) and stable import surface
+│   ├── commands.py    # Typer app: wipe, wipe-free-space, version, install-right-click
+│   ├── interactive.py # interactive drag-and-drop session
+│   ├── runner.py      # shared wipe flow: target expansion, batch with dashboard, cleanup
+│   ├── ui.py          # console output: banner, prompts, summary, dashboard, warnings
+│   ├── i18n.py        # EN/ES strings and the active language
+│   ├── free_space.py  # free-space fill engine
 │   ├── engine.py      # async wipe engine (Direct I/O, ADS, slack space, verification)
+│   ├── residue.py     # detection of setups where copies may survive
 │   ├── safety.py      # link-safe target collection and protected-target checks
 │   ├── storage.py     # storage-type detection (sysfs / IOCTL / diskutil)
 │   ├── trim.py        # TRIM on Linux (FITRIM)
@@ -318,8 +325,15 @@ Para construir `MadaraMaster.exe` en Windows: `.\build.ps1`, o `pip install ".[b
 ```
 MadaraMaster/
 ├── madaramaster/
-│   ├── cli.py         # línea de comandos, sesión interactiva, dashboard, i18n
+│   ├── cli.py         # punto de entrada (madara) e interfaz de importación estable
+│   ├── commands.py    # app Typer: wipe, wipe-free-space, version, install-right-click
+│   ├── interactive.py # sesión interactiva de arrastrar y soltar
+│   ├── runner.py      # flujo común: expansión de objetivos, lote con dashboard, limpieza
+│   ├── ui.py          # salida por consola: banner, preguntas, resumen, dashboard, avisos
+│   ├── i18n.py        # textos EN/ES e idioma activo
+│   ├── free_space.py  # motor de relleno del espacio libre
 │   ├── engine.py      # motor asíncrono (Direct I/O, ADS, slack space, verificación)
+│   ├── residue.py     # detección de configuraciones donde pueden quedar copias
 │   ├── safety.py      # recogida de objetivos sin seguir enlaces y objetivos protegidos
 │   ├── storage.py     # detección del tipo de almacenamiento (sysfs / IOCTL / diskutil)
 │   ├── trim.py        # TRIM en Linux (FITRIM)

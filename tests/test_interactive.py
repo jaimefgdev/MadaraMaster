@@ -10,14 +10,15 @@ from unittest import mock
 import pytest
 
 from madaramaster import cli as madara
+from madaramaster import i18n, interactive
 from madaramaster.models import WipeSummary
 
 
 @pytest.fixture(autouse=True)
 def english():
-    madara.current_lang = "EN"
+    i18n.current_lang = "EN"
     yield
-    madara.current_lang = "EN"
+    i18n.current_lang = "EN"
 
 
 # ── Point 9: parsing ─────────────────────────────────────────────────────────
@@ -84,7 +85,7 @@ def _run_session(monkeypatch, lines):
 @pytest.fixture
 def engine(monkeypatch):
     fake = mock.AsyncMock(return_value=WipeSummary(total_files=1, files_wiped=1))
-    monkeypatch.setattr(madara, "async_wipe_logic", fake)
+    monkeypatch.setattr(interactive, "async_wipe_logic", fake)
     return fake
 
 

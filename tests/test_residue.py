@@ -7,7 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from madaramaster import cli as madara
-from madaramaster import residue
+from madaramaster import i18n, residue
 from madaramaster.residue import Residue
 
 # conftest replaces detect_residue_risks with a mock; keep the real one here.
@@ -151,9 +151,9 @@ def test_real_probe_on_this_machine(tmp_path):
 
 @pytest.fixture
 def english():
-    madara.current_lang = "EN"
+    i18n.current_lang = "EN"
     yield
-    madara.current_lang = "EN"
+    i18n.current_lang = "EN"
 
 
 def test_cli_warns_before_wiping(tmp_path, fake_residue, english):
@@ -183,7 +183,7 @@ def test_cli_warning_in_spanish(tmp_path, fake_residue):
     try:
         res = CliRunner().invoke(madara.app, ["--lang", "es", "wipe", str(f), "--dry-run"])
     finally:
-        madara.current_lang = "EN"
+        i18n.current_lang = "EN"
     assert res.exit_code == 0, res.output
     assert "Pueden quedar copias" in res.output
     assert "Ubicación de red" in res.output

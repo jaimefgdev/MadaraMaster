@@ -7,15 +7,16 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from madaramaster import cli as madara
+from madaramaster import i18n, runner, ui
 from madaramaster.models import WipeTelemetry
 from madaramaster.storage import SanitizationStandard, StorageType
 
 
 @pytest.fixture(autouse=True)
 def english():
-    madara.current_lang = "EN"
+    i18n.current_lang = "EN"
     yield
-    madara.current_lang = "EN"
+    i18n.current_lang = "EN"
 
 
 def _render(renderable) -> str:
@@ -65,7 +66,7 @@ async def test_dashboard_is_fed_from_the_engine_plan(tmp_path, monkeypatch, fake
         seen.append((telemetry.total_passes, list(telemetry.pass_patterns)))
         return real(telemetry, *args)
 
-    monkeypatch.setattr(madara, "_build_dashboard", spy)
+    monkeypatch.setattr(runner, "_build_dashboard", spy)
     summary = await madara.async_wipe_logic([str(f)], standard=SanitizationStandard.DOD_LEGACY)
     assert summary.files_wiped == 1
     assert (1, ["random"]) in seen
@@ -103,7 +104,7 @@ def test_interactive_reports_the_real_outcome(tmp_path, monkeypatch):
     lines = iter([str(a), "", "y", "exit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
     con = Console(record=True, width=140, color_system=None)
-    monkeypatch.setattr(madara, "console", con)
+    monkeypatch.setattr(ui, "console", con)
 
     madara.interactive_session()
 
