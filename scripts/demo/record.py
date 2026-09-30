@@ -39,6 +39,8 @@ from pathlib import Path
 COLS, ROWS = 100, 34
 PROMPT = "\x1b[1;32mdemo\x1b[0m:\x1b[1;34m~/tmp\x1b[0m$ "
 TYPE_DELAY = 0.06
+# Output pause that ends one burst (e.g. one dashboard repaint), in seconds.
+QUIET = 0.02
 
 # Throwaway files for the demo: name -> size in bytes.
 FILES = {
@@ -61,9 +63,12 @@ class Recorder:
         self.events.append((round(time.monotonic() - self.start, 4), text))
 
     def type(self, text: str, delay: float = TYPE_DELAY) -> None:
+        """Type *text* key by key, then press Enter (CR LF in one event, so
+        no frame shows the cursor back at the start of the line)."""
         for ch in text:
             self.emit(ch)
             time.sleep(delay)
+        self.emit("\r\n")
 
     def pause(self, seconds: float) -> None:
         time.sleep(seconds)
@@ -127,27 +132,48 @@ def run_in_pty(rec: Recorder, argv: list[str], cwd: Path, env: dict[str, str],
     # Reads can split a multi-byte UTF-8 character; decoding each chunk on
     # its own would turn it into replacement characters (and wider lines).
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-    while True:
-        ready, _, _ = select.select([fd], [], [], 0.05)
-        if ready:
+
+    def pump(timeout: float) -> bool:
+        """Record the output that arrives within *timeout*; False at EOF.
+
+        A dashboard repaint is larger than one pty read (about 4 KB), so
+        reads are joined until the output pauses: each repaint becomes a
+        single event and no frame can show it half drawn.
+        """
+        nonlocal seen
+        chunks = []
+        eof = False
+        ready, _, _ = select.select([fd], [], [], timeout)
+        deadline = time.monotonic() + 0.25
+        while ready:
             try:
                 data = os.read(fd, 65536)
-            except OSError:
-                break
+            except OSError:  # Linux: EIO once the child has exited
+                data = b""
             if not data:
+                eof = True
                 break
-            text = decoder.decode(data)
-            if not text:
-                continue
+            chunks.append(data)
+            if time.monotonic() > deadline:
+                break
+            ready, _, _ = select.select([fd], [], [], QUIET)
+        text = decoder.decode(b"".join(chunks))
+        if text:
             rec.emit(text)
             seen += text
+        return not eof
+
+    while pump(0.05):
         if pending and pending[0][0] in seen:
             _, reply = pending.pop(0)
             seen = ""
             rec.pause(1.6)  # let the viewer read the prompt
             for ch in reply:
+                key_time = time.monotonic() + TYPE_DELAY * 2
                 os.write(fd, ch.encode())
-                time.sleep(TYPE_DELAY * 2)
+                # Record the echo of every key, so the answer is seen being typed.
+                pump(TYPE_DELAY * 2)
+                time.sleep(max(0.0, key_time - time.monotonic()))
     _, status = os.waitpid(pid, 0)
     return os.waitstatus_to_exitcode(status)
 
@@ -183,11 +209,11 @@ def main() -> int:
         rec = Recorder()
         rec.emit(PROMPT)
         rec.pause(0.8)
-        rec.type("ls -R secret-project\r\n")
+        rec.type("ls -R secret-project")
         rec.emit(listing(project))
         rec.emit(PROMPT)
         rec.pause(1.2)
-        rec.type("madara wipe secret-project -s purge\r\n")
+        rec.type("madara wipe secret-project -s purge")
         code = run_in_pty(
             rec,
             [*madara, "wipe", "secret-project", "-s", "purge"],
@@ -198,7 +224,7 @@ def main() -> int:
         rec.pause(3.0)
         rec.emit(PROMPT)
         rec.pause(0.6)
-        rec.type("ls secret-project\r\n")
+        rec.type("ls secret-project")
         gone = not project.exists()
         rec.emit(
             "ls: cannot access 'secret-project': No such file or directory\r\n"
