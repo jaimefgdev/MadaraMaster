@@ -12,6 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from madaramaster import cli as madara
+from madaramaster import commands
 from madaramaster.models import WipeSummary
 from madaramaster.safety import find_danger
 
@@ -92,7 +93,7 @@ def test_resolved_path_is_checked_for_directories(layout):
 @pytest.fixture
 def engine(monkeypatch):
     fake = mock.AsyncMock(return_value=WipeSummary(total_files=1, files_wiped=1))
-    monkeypatch.setattr(madara, "async_wipe_logic", fake)
+    monkeypatch.setattr(commands, "async_wipe_logic", fake)
     return fake
 
 

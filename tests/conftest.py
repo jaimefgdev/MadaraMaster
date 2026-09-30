@@ -33,7 +33,7 @@ from unittest import mock
 import aiofiles.threadpool
 import pytest
 
-from madaramaster import audit, residue, storage, trim
+from madaramaster import audit, commands, free_space, residue, runner, storage, trim
 from madaramaster import cli as madara
 from madaramaster import engine as wiper_async
 from madaramaster.storage import StorageType
@@ -133,7 +133,7 @@ def safety_net(
 
     # ── Never TRIM, never probe real hardware ────────────────────────────
     fake_trim = mock.Mock(name="send_trim", return_value=False)
-    for mod in (trim, madara):
+    for mod in (trim, madara, runner, free_space):
         monkeypatch.setattr(mod, "send_trim", fake_trim)
 
     fake_storage = mock.Mock(name="detect_storage_type", return_value=StorageType.HDD)
@@ -154,7 +154,7 @@ def safety_net(
 
     # The default audit log lives in the user's profile: keep it in tmp.
     sandbox_log = tmp_path / "_default_state" / "audit.jsonl"
-    for mod in (audit, madara):
+    for mod in (audit, madara, commands):
         monkeypatch.setattr(mod, "default_log_path", lambda: sandbox_log)
 
     # ── File-system guards ───────────────────────────────────────────────

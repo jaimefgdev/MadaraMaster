@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from madaramaster import cli as madara
+from madaramaster import free_space
 
 
 class _FakeFill:
@@ -50,7 +51,7 @@ def fake_fill(monkeypatch):
             state["path"] = Path(path)
             return _FakeFill(path, script)
 
-        monkeypatch.setattr(madara.aiofiles, "open", fake_open)
+        monkeypatch.setattr(free_space.aiofiles, "open", fake_open)
         return state
 
     return install
