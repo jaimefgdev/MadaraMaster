@@ -244,7 +244,9 @@ def _build_dashboard(
     basename = os.path.basename(telemetry.current_file) if telemetry.current_file else "—"
     display_name = basename[:45] + "…" if len(basename) > 45 else basename
 
-    if telemetry.finished:
+    if telemetry.batch_complete:
+        status_text = T("dash_done")
+    elif telemetry.finished:
         status_text = T("dash_scrubbing")
     elif telemetry.current_pass > 0:
         idx = telemetry.current_pass

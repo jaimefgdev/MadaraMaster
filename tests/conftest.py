@@ -124,6 +124,12 @@ def _sandbox_root(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
 
 
 @pytest.fixture(autouse=True)
+def no_final_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the dashboard's pause on its final frame (tests opt back in)."""
+    monkeypatch.setattr(runner, "FINAL_HOLD_SECONDS", 0)
+
+
+@pytest.fixture(autouse=True)
 def safety_net(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,

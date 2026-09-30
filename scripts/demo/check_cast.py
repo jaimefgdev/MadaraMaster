@@ -10,7 +10,9 @@ The asciicast is replayed in `pyte` and the screen is inspected after
 * the summary table and the final banner are never on screen twice;
 * no replacement characters (U+FFFD) from split UTF-8 sequences;
 * the dashboard's global progress never goes back and never claims
-  100 % with nothing to write ("0 B / 0 B").
+  100 % with nothing to write ("0 B / 0 B");
+* the dashboard reaches 100 % and stays there for at least
+  ``FINAL_HOLD`` seconds before anything else is drawn.
 
 Usage::
 
@@ -31,6 +33,7 @@ import pyte
 CONFIRM = "Type the directory name"
 DASH_HEADER = "MADARA MASTER v"
 PROGRESS = re.compile(r"Global Progress.*?(\d+(?:\.\d)?)%")
+FINAL_HOLD = 0.5
 ONCE = (CONFIRM, "WIPE SUMMARY", "FILES OVERWRITTEN AND DELETED", DASH_HEADER)
 
 
@@ -76,6 +79,9 @@ def check(path: Path) -> list[str]:
     stream = pyte.Stream(screen)
     problems = []
     last_progress = None
+    dashboard_seen = False
+    final_shown = False
+    final_since = None  # time the dashboard first showed 100 %
     for i, (t, kind, data) in enumerate(events):
         if kind != "o":
             continue
@@ -83,15 +89,28 @@ def check(path: Path) -> list[str]:
         rows = [row.rstrip() for row in screen.display]
         found = screen_problems(rows)
         match = next((m for m in map(PROGRESS.search, rows) if m), None)
-        if match:
-            progress = float(match.group(1))
+        progress = float(match.group(1)) if match else None
+        if progress is not None:
             if last_progress is not None and progress < last_progress:
                 found.append(f"global progress went back from {last_progress}% to {progress}%")
             last_progress = progress
+            dashboard_seen = True
+        if progress is not None and progress >= 100.0:
+            if final_since is None:
+                final_since = t
+        elif final_since is not None and not final_shown:
+            # The 100 % frame has just been replaced: it must have lasted.
+            final_shown = True
+            if t - final_since < FINAL_HOLD:
+                found.append(
+                    f"100 % shown for {t - final_since:.2f}s only (at least {FINAL_HOLD}s)"
+                )
         if any("0 B / 0 B" in row for row in rows):
             found.append("dashboard shows '0 B / 0 B'")
         for p in found:
             problems.append(f"event {i} (t={t:.2f}s): {p}")
+    if dashboard_seen and final_since is None:
+        problems.append("the dashboard never shows 100 %")
     return problems
 
 

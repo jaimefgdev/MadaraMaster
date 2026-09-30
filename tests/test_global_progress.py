@@ -15,6 +15,7 @@ from madaramaster import cli as madara
 from madaramaster import i18n, runner
 from madaramaster.models import WipeTelemetry
 from madaramaster.storage import SanitizationStandard, StorageType
+from madaramaster.utils import format_bytes
 
 
 @pytest.fixture(autouse=True)
@@ -149,3 +150,47 @@ async def test_batch_of_empty_files_counts_files(tmp_path, frames, fake_storage)
 
     assert summary.files_wiped == 2
     _assert_monotonic_0_to_100(frames)
+
+
+async def test_final_frame_stays_at_100_percent_before_the_summary(
+    tmp_path, monkeypatch, fake_storage
+):
+    """The last repaint used to be erased as soon as it was drawn."""
+    import time
+
+    fake_storage.return_value = StorageType.HDD
+    monkeypatch.setattr(runner, "FINAL_HOLD_SECONDS", 0.6)  # the real value
+    paths = _make(tmp_path, [512 * 1024, 411])
+    target = sum(os.path.getsize(p) for p in paths) * 3  # purge on an HDD: 3 passes
+    built = []
+    real = runner._build_dashboard
+
+    def spy(telemetry, *args):
+        panel = real(telemetry, *args)
+        built.append((time.monotonic(), _render(panel)))
+        return panel
+
+    monkeypatch.setattr(runner, "_build_dashboard", spy)
+    started = time.monotonic()
+    summary = await madara.async_wipe_logic(paths, standard=SanitizationStandard.NIST_PURGE)
+    returned = time.monotonic()
+
+    assert summary.files_wiped == 2
+    final_at, final = built[-1]
+    size = format_bytes(target)
+    assert "100.0%" in final
+    assert f"{size} / {size}" in final
+    assert "Done" in final and "2/2" in final
+    # Nothing replaces the final frame for at least half a second.
+    assert returned - final_at >= 0.5
+    # The pause is not counted as wiping time.
+    assert summary.total_duration <= (returned - started) - 0.5
+
+
+def test_final_status_is_translated():
+    for lang, word in (("EN", "Done"), ("ES", "Terminado")):
+        i18n.current_lang = lang
+        t = WipeTelemetry(batch_files=1, batch_files_done=1, batch_total_bytes=10,
+                          batch_done_bytes=10, batch_written_bytes=10, batch_complete=True)
+        text = _render(madara._build_dashboard(t, madara.SpeedTracker(), 1, 1))
+        assert word in text and "100.0%" in text and "10 B / 10 B" in text

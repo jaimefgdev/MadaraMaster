@@ -52,6 +52,7 @@ class WipeTelemetry:
     batch_total_bytes: int = 0  # sum of file size × passes over the batch
     batch_done_bytes: int = 0  # planned bytes of the files already processed
     batch_written_bytes: int = 0  # bytes actually overwritten in those files
+    batch_complete: bool = False  # every file processed: final 100 % frame
 
     @property
     def total_target_bytes(self) -> int:
