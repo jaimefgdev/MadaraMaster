@@ -1,0 +1,8 @@
+# Files the sdist needs beyond what setuptools picks up automatically.
+# tests/conftest.py holds the safety net (mocked TRIM and storage detection,
+# no device access, no writes outside tmp): the tests must never run without it.
+graft tests
+graft scripts
+include RELEASING.md
+include madara.py MadaraMaster.spec madara.manifest build.ps1 .gitignore
+global-exclude __pycache__ *.py[cod]

@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:  # reused by release.yml before publishing
 
 jobs:
   lint:
@@ -14,10 +15,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install ruff
-        run: python -m pip install --upgrade pip "ruff>=0.6"
+      - name: Install ruff and actionlint
+        run: python -m pip install --upgrade pip "ruff>=0.6" actionlint-py
       - name: Lint
         run: ruff check .
+      - name: Lint GitHub Actions workflows
+        run: actionlint
       - name: Build wheel
         run: python -m pip wheel . --no-deps -w wheelhouse
       - name: Install wheel and run the console script
