@@ -14,6 +14,8 @@ cd "$(dirname "$0")/../.."
 PYTHON="${PYTHON:-python3}"
 
 "$PYTHON" scripts/demo/record.py --out docs/demo.cast
+# Every screen of the recording must be free of repaint leftovers.
+"$PYTHON" scripts/demo/check_cast.py docs/demo.cast
 
 if [ "${USE_AGG:-auto}" != "no" ] && command -v agg >/dev/null 2>&1; then
     agg --idle-time-limit 2.5 --font-size 15 --last-frame-duration 4 docs/demo.cast docs/demo.gif
