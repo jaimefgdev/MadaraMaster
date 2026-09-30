@@ -128,6 +128,18 @@ def test_cli_directory_requires_typing_its_name(tmp_path, engine):
     engine.assert_called_once()
 
 
+def test_cli_directory_prompt_shows_no_empty_default(tmp_path, engine):
+    target = tmp_path / "project"
+    target.mkdir()
+    (target / "a.txt").write_bytes(b"x")
+
+    res = CliRunner().invoke(madara.app, ["wipe", str(target)], input="no\n")
+    assert res.exit_code == 0, res.output
+    assert "(project) to confirm:" in res.output
+    assert "[]" not in res.output
+    engine.assert_not_called()
+
+
 def test_cli_single_file_keeps_yes_no_prompt(tmp_path, engine):
     f = tmp_path / "a.txt"
     f.write_bytes(b"x")
