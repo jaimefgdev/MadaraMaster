@@ -16,16 +16,16 @@ import pytest
 from typer.testing import CliRunner
 
 import madaramaster
-from madaramaster import cli
+from madaramaster import cli, commands, i18n
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
 def english():
-    cli.current_lang = "EN"
+    i18n.current_lang = "EN"
     yield
-    cli.current_lang = "EN"
+    i18n.current_lang = "EN"
 
 
 def _invoke(*args, env=None):
@@ -150,7 +150,7 @@ def _fake_winreg():
 def test_install_right_click_uses_current_user_hive(monkeypatch):
     fake = _fake_winreg()
     monkeypatch.setitem(sys.modules, "winreg", fake)
-    monkeypatch.setattr(cli.sys, "platform", "win32")
+    monkeypatch.setattr(commands.sys, "platform", "win32")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", r"C:\Tools\MadaraMaster.exe")
 
@@ -164,7 +164,7 @@ def test_install_right_click_uses_current_user_hive(monkeypatch):
 
 
 def test_install_right_click_refuses_off_windows(monkeypatch):
-    monkeypatch.setattr(cli.sys, "platform", "linux")
+    monkeypatch.setattr(commands.sys, "platform", "linux")
     res = _invoke("install-right-click")
     assert res.exit_code == 1
 
@@ -218,10 +218,13 @@ def test_english_is_the_default(tmp_path):
 
 
 def test_no_hardcoded_spanish_outside_the_translation_table():
-    source = (ROOT / "madaramaster" / "cli.py").read_text(encoding="utf-8")
+    pkg = ROOT / "madaramaster"
+    source = (pkg / "i18n.py").read_text(encoding="utf-8")
     start = source.index("LANG: dict[str, dict[str, str]] = {")
     end = source.index("current_lang: str =")
     outside = source[:start] + source[end:]
+    for module in ("cli", "commands", "ui", "runner", "interactive", "free_space"):
+        outside += (pkg / f"{module}.py").read_text(encoding="utf-8")
     for phrase in ("Interrumpido", "Estándar inválido", "Error durante", "El disco quedará",
                    "Saltar confirmación", "Menú contextual"):
         assert phrase not in outside, phrase
