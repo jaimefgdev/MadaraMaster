@@ -29,6 +29,14 @@ Secure file deletion for Linux, Windows and macOS. MadaraMaster overwrites files
 
 ### Installation
 
+From PyPI (published releases):
+
+```bash
+pip install madaramaster
+```
+
+Latest development version:
+
 ```bash
 pip install git+https://github.com/jaimefgdev/MadaraMaster
 ```
@@ -43,7 +51,7 @@ pip install .
 
 This installs the `madara` command. `python -m madaramaster` and `python madara.py` (from a clone) are equivalent.
 
-**Windows executable:** `.\build.ps1` builds `MadaraMaster.exe` with PyInstaller (see [Development](#development)). The executable runs with your own rights and never asks for elevation by itself.
+**Windows executable:** download `MadaraMaster-<version>-windows-x64.exe` from the [Releases](https://github.com/jaimefgdev/MadaraMaster/releases) page (each release lists the SHA-256 of its files), or build it yourself with `.\build.ps1` (see [Development](#development)). The executable runs with your own rights and never asks for elevation by itself.
 
 ### Usage
 
@@ -142,6 +150,8 @@ The tests never wipe anything real: an autouse fixture mocks TRIM and storage de
 
 To build `MadaraMaster.exe` on Windows: `.\build.ps1`, or `pip install ".[build]"` and `pyinstaller MadaraMaster.spec --clean --noconfirm`.
 
+Releases are automated: pushing a tag `vX.Y.Z` that matches `__version__` builds the `.exe`, the wheel and the sdist, creates a GitHub Release and publishes to PyPI. See [RELEASING.md](RELEASING.md).
+
 ### Project structure
 
 ```
@@ -167,6 +177,8 @@ MadaraMaster/
 ├── MadaraMaster.spec  # PyInstaller build
 ├── madara.manifest    # Windows manifest (asInvoker)
 ├── build.ps1          # Windows release script
+├── scripts/           # release-notes generator used by the release workflow
+├── RELEASING.md       # release process and PyPI Trusted Publishing setup
 └── pyproject.toml
 ```
 
@@ -207,6 +219,14 @@ Borrado seguro de archivos para Linux, Windows y macOS. MadaraMaster sobrescribe
 
 ### Instalación
 
+Desde PyPI (versiones publicadas):
+
+```bash
+pip install madaramaster
+```
+
+Última versión de desarrollo:
+
 ```bash
 pip install git+https://github.com/jaimefgdev/MadaraMaster
 ```
@@ -221,7 +241,7 @@ pip install .
 
 Esto instala el comando `madara`. `python -m madaramaster` y `python madara.py` (desde un clon) son equivalentes.
 
-**Ejecutable para Windows:** `.\build.ps1` genera `MadaraMaster.exe` con PyInstaller (ver [Desarrollo](#desarrollo)). El ejecutable funciona con tus propios permisos y nunca pide elevación por su cuenta.
+**Ejecutable para Windows:** descarga `MadaraMaster-<versión>-windows-x64.exe` desde la página de [Releases](https://github.com/jaimefgdev/MadaraMaster/releases) (cada versión lista el SHA-256 de sus ficheros), o genéralo tú con `.\build.ps1` (ver [Desarrollo](#desarrollo)). El ejecutable funciona con tus propios permisos y nunca pide elevación por su cuenta.
 
 ### Uso
 
@@ -320,6 +340,8 @@ Los tests nunca borran nada real: un fixture autouse sustituye TRIM y la detecci
 
 Para construir `MadaraMaster.exe` en Windows: `.\build.ps1`, o `pip install ".[build]"` y `pyinstaller MadaraMaster.spec --clean --noconfirm`.
 
+Las versiones se publican automáticamente: al subir un tag `vX.Y.Z` que coincida con `__version__` se construyen el `.exe`, el wheel y el sdist, se crea una GitHub Release y se publica en PyPI. Consulta [RELEASING.md](RELEASING.md).
+
 ### Estructura del proyecto
 
 ```
@@ -345,6 +367,8 @@ MadaraMaster/
 ├── MadaraMaster.spec  # build de PyInstaller
 ├── madara.manifest    # manifiesto de Windows (asInvoker)
 ├── build.ps1          # script de release para Windows
+├── scripts/           # generador de notas usado por el workflow de release
+├── RELEASING.md       # proceso de release y configuración de Trusted Publishing
 └── pyproject.toml
 ```
 
