@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 
 import pyte
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 FONT_DIRS = [
     Path("/usr/share/fonts/truetype/dejavu"),
@@ -55,6 +55,7 @@ THEME = {
     "brightwhite": (255, 255, 255),
 }
 ALIASES = {"yellow": "brown", "brightyellow": "brightbrown"}
+GIF_COLORS = 256  # the most a GIF palette holds
 
 
 def find_font(name: str) -> Path:
@@ -103,6 +104,9 @@ class Renderer:
         self.emoji_font = ImageFont.truetype(str(emoji), 109) if emoji else None
         self._emoji_cache: dict[str, Image.Image | None] = {}
         self.size = (cols * self.cw + 2 * padding, rows * self.ch + 2 * padding)
+        # Exact terminal colours drawn in the last frame (text, cell and
+        # cursor backgrounds); the GIF palette keeps each of them as is.
+        self.colors: set[tuple[int, int, int]] = set()
 
     def emoji(self, ch: str) -> Image.Image | None:
         if ch not in self._emoji_cache:
@@ -125,6 +129,7 @@ class Renderer:
     def frame(self, screen: pyte.Screen, cursor: bool) -> Image.Image:
         img = Image.new("RGB", self.size, THEME["bg"])
         draw = ImageDraw.Draw(img)
+        self.colors = {THEME["bg"]}
         for y in range(self.rows):
             line = screen.buffer[y]
             for x in range(self.cols):
@@ -138,6 +143,7 @@ class Renderer:
                 px, py = self.pad + x * self.cw, self.pad + y * self.ch
                 if bg != THEME["bg"]:
                     draw.rectangle([px, py, px + self.cw - 1, py + self.ch - 1], fill=bg)
+                    self.colors.add(bg)
                 data = cell.data
                 if not data or data == " ":
                     continue
@@ -149,11 +155,42 @@ class Renderer:
                         continue
                 font = self.bold if cell.bold else self.font
                 draw.text((px, py + self.yoff), data[0], font=font, fill=fg)
+                self.colors.add(fg)
         if cursor and not screen.cursor.hidden:
             cx = self.pad + screen.cursor.x * self.cw
             cy = self.pad + screen.cursor.y * self.ch
             draw.rectangle([cx, cy, cx + self.cw - 1, cy + self.ch - 1], fill=THEME["fg"])
+            self.colors.add(THEME["fg"])
         return img
+
+
+def to_palette(img: Image.Image, colors: set[tuple[int, int, int]]) -> Image.Image:
+    """Quantize *img* to a GIF palette that keeps every colour in *colors* exact.
+
+    The terminal colours get their own palette entries and the remaining
+    entries (anti-aliased edges, emoji) come from an octree quantization.
+    A plain median cut averaged small areas of text into their neighbours
+    (e.g. a pink value turned grey).  Pillow maps pixels to a palette through
+    a reduced-precision cache, so pixels of an exact colour are then set to
+    its entry explicitly.
+    """
+    exact = sorted(colors)[: GIF_COLORS - 1]  # leave room for the rest
+    fill = img.quantize(GIF_COLORS - len(exact), method=Image.Quantize.FASTOCTREE,
+                        dither=Image.Dither.NONE)
+    flat = fill.getpalette() or []
+    extra = [tuple(flat[i : i + 3]) for i in range(0, len(flat), 3)]
+    entries = exact + [c for c in extra if c not in colors]
+    entries = (entries + [entries[0]] * GIF_COLORS)[:GIF_COLORS]
+    palette = Image.new("P", (1, 1))
+    palette.putpalette([v for c in entries for v in c])
+    out = img.quantize(palette=palette, dither=Image.Dither.NONE)
+    channels = img.split()
+    for index, rgb in enumerate(exact):
+        masks = [ch.point(lambda v, want=want: 255 if v == want else 0)
+                 for ch, want in zip(channels, rgb, strict=True)]
+        mask = ImageChops.multiply(ImageChops.multiply(masks[0], masks[1]), masks[2])
+        out.paste(index, mask=mask)
+    return out
 
 
 def render(
@@ -187,6 +224,7 @@ def render(
     # the last capture) and always for the last event, so the final state of a
     # burst (e.g. a dashboard at 100 % before a pause) is never skipped.
     frames: list[Image.Image] = []
+    frame_colors: list[set[tuple[int, int, int]]] = []
     starts: list[float] = []
     step = 1.0 / fps
     for i, (at, data) in enumerate(timeline):
@@ -199,15 +237,13 @@ def render(
             continue
         starts.append(at if starts else 0.0)
         frames.append(img)
+        frame_colors.append(renderer.colors)
     durations = [
         max(20, round((b - a) * 1000)) for a, b in zip(starts, starts[1:], strict=False)
     ]
     durations.append(round(end_hold * 1000))
 
-    palette_frames = [
-        f.quantize(colors=96, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
-        for f in frames
-    ]
+    palette_frames = [to_palette(f, c) for f, c in zip(frames, frame_colors, strict=True)]
     out.parent.mkdir(parents=True, exist_ok=True)
     palette_frames[0].save(
         out,

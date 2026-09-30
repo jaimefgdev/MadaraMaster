@@ -113,6 +113,34 @@ def test_render_gif_on_a_synthetic_cast(tmp_path):
     assert durations[-1] == 1000
 
 
+def test_render_gif_keeps_terminal_colours_exact():
+    """A few pixels of a terminal colour are not averaged into their neighbours.
+
+    The old 96-colour median cut turned the pink "Total Duration" value of
+    the summary almost grey in the last frame.
+    """
+    pytest.importorskip("pyte")
+    pytest.importorskip("PIL")
+    from PIL import Image, ImageDraw
+
+    spec = importlib.util.spec_from_file_location("render_gif", DEMO / "render_gif.py")
+    render_gif = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(render_gif)
+
+    pink, grey = render_gif.THEME["brightmagenta"], (171, 139, 175)
+    img = Image.new("RGB", (400, 100), render_gif.THEME["bg"])
+    draw = ImageDraw.Draw(img)
+    for x in range(400):  # far more colours than a GIF palette holds
+        draw.line([(x, 0), (x, 89)], fill=(x % 256, (x * 3) % 256, 255 - x % 256))
+    draw.rectangle([10, 92, 17, 97], fill=pink)  # a small patch, like one glyph
+    draw.rectangle([30, 92, 37, 97], fill=grey)
+
+    out = render_gif.to_palette(img, {pink, grey, render_gif.THEME["bg"]}).convert("RGB")
+    assert out.getpixel((13, 95)) == pink
+    assert out.getpixel((33, 95)) == grey
+    assert out.getpixel((200, 95)) == render_gif.THEME["bg"]
+
+
 def load_checker():
     pytest.importorskip("pyte")
     spec = importlib.util.spec_from_file_location("check_cast", DEMO / "check_cast.py")
