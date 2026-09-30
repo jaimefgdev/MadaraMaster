@@ -160,7 +160,7 @@ The tests never wipe anything real: an autouse fixture mocks TRIM and storage de
 
 To build `MadaraMaster.exe` on Windows: `.\build.ps1`, or `pip install ".[build]"` and `pyinstaller MadaraMaster.spec --clean --noconfirm`.
 
-The demo GIF at the top is generated, not hand-made: `scripts/demo/make_demo.sh` (Linux or macOS) records `madara wipe` on throwaway files inside a fresh temporary directory into `docs/demo.cast` and renders `docs/demo.gif`, with [agg](https://github.com/asciinema/agg) if it is installed or otherwise with `scripts/demo/render_gif.py` (`pip install ".[demo]"`). Nothing outside that temporary directory is touched, and it is removed afterwards.
+The demo GIF at the top is generated, not hand-made: `scripts/demo/make_demo.sh` (Linux or macOS) records `madara wipe` on throwaway files inside a fresh temporary directory into `docs/demo.cast`, checks every screen of the recording for repaint leftovers (`scripts/demo/check_cast.py`) and renders `docs/demo.gif`, with [agg](https://github.com/asciinema/agg) if it is installed or otherwise with `scripts/demo/render_gif.py` (`pip install ".[demo]"`). Nothing outside that temporary directory is touched, and it is removed afterwards.
 
 Releases are automated: pushing a tag `vX.Y.Z` that matches `__version__` builds the `.exe`, the wheel and the sdist, creates a GitHub Release and publishes to PyPI. See [RELEASING.md](RELEASING.md).
 
@@ -190,7 +190,7 @@ MadaraMaster/
 ├── madara.manifest    # Windows manifest (asInvoker)
 ├── build.ps1          # Windows release script
 ├── scripts/           # release-notes generator used by the release workflow
-│   └── demo/          # reproducible README demo (record.py, render_gif.py, make_demo.sh)
+│   └── demo/          # reproducible README demo (record, check, render)
 ├── docs/              # demo.cast and demo.gif shown at the top of this README
 ├── RELEASING.md       # release process and PyPI Trusted Publishing setup
 └── pyproject.toml
@@ -354,7 +354,7 @@ Los tests nunca borran nada real: un fixture autouse sustituye TRIM y la detecci
 
 Para construir `MadaraMaster.exe` en Windows: `.\build.ps1`, o `pip install ".[build]"` y `pyinstaller MadaraMaster.spec --clean --noconfirm`.
 
-El GIF de demostración del principio se genera, no se hace a mano: `scripts/demo/make_demo.sh` (Linux o macOS) graba `madara wipe` sobre ficheros desechables dentro de un directorio temporal nuevo en `docs/demo.cast` y genera `docs/demo.gif`, con [agg](https://github.com/asciinema/agg) si está instalado o, si no, con `scripts/demo/render_gif.py` (`pip install ".[demo]"`). No se toca nada fuera de ese directorio temporal, que se borra al terminar.
+El GIF de demostración del principio se genera, no se hace a mano: `scripts/demo/make_demo.sh` (Linux o macOS) graba `madara wipe` sobre ficheros desechables dentro de un directorio temporal nuevo en `docs/demo.cast`, comprueba que ninguna pantalla de la grabación tenga restos de repintado (`scripts/demo/check_cast.py`) y genera `docs/demo.gif`, con [agg](https://github.com/asciinema/agg) si está instalado o, si no, con `scripts/demo/render_gif.py` (`pip install ".[demo]"`). No se toca nada fuera de ese directorio temporal, que se borra al terminar.
 
 Las versiones se publican automáticamente: al subir un tag `vX.Y.Z` que coincida con `__version__` se construyen el `.exe`, el wheel y el sdist, se crea una GitHub Release y se publica en PyPI. Consulta [RELEASING.md](RELEASING.md).
 
@@ -384,7 +384,7 @@ MadaraMaster/
 ├── madara.manifest    # manifiesto de Windows (asInvoker)
 ├── build.ps1          # script de release para Windows
 ├── scripts/           # generador de notas usado por el workflow de release
-│   └── demo/          # demo reproducible del README (record.py, render_gif.py, make_demo.sh)
+│   └── demo/          # demo reproducible del README (grabar, comprobar, generar)
 ├── docs/              # demo.cast y demo.gif que se muestran al principio de este README
 ├── RELEASING.md       # proceso de release y configuración de Trusted Publishing
 └── pyproject.toml
