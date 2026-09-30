@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Módulo TRIM — hook post-borrado para forzar el GC del controlador SSD/NVMe
-# jaimefg1888
+# jaimefgdev
 #
 # Linux  → ioctl FITRIM sobre el directorio padre (sin subprocess).
 #           Requiere CAP_SYS_ADMIN; falla silenciosamente si no hay permisos.
