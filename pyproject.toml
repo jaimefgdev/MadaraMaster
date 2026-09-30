@@ -32,8 +32,13 @@ dev = [
     "pytest>=8,<10",
     "pytest-asyncio>=0.23,<2",
     "ruff>=0.6",
+    # tests/test_demo.py renders a tiny GIF with scripts/demo/render_gif.py
+    "pyte>=0.8",
+    "pillow>=10",
 ]
 build = ["pyinstaller>=6,<7"]
+# scripts/demo/render_gif.py (regenerating the README GIF without agg)
+demo = ["pyte>=0.8", "pillow>=10"]
 
 [project.scripts]
 madara = "madaramaster.cli:main"
