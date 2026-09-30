@@ -36,7 +36,7 @@ BANNER = """
        ██║ ╚═╝ ██║██║  ██║███████║   ██║   ███████╗██║  ██║
        ╚═╝     ╚═╝╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 
-   MadaraMaster v{version} • Created by jaimefg1888
+   MadaraMaster v{version} • Created by jaimefgdev
 """
 
 

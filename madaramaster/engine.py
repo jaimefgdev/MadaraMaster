@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Motor asíncrono de borrado
-# jaimefg1888
+# jaimefgdev
 #
 # Mitigaciones forenses de bajo nivel:
 #   1. Destrucción de metadatos de inodo (MFT / ext4 Journal)

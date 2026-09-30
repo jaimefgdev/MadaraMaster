@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Log de auditoría forense — formato JSON Lines
-# jaimefg1888
+# jaimefgdev
 
 import getpass
 import json
